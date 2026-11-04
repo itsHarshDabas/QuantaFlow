@@ -1,4 +1,5 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, type FSWatcher, readFileSync, watch } from "node:fs";
+import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { HarnessRegistry } from "@quantaflow/drivers";
@@ -59,6 +60,8 @@ export interface RunningDaemon {
   warnings: string[];
   supervisor: Supervisor;
   server: FastifyInstance;
+  /** Re-reads `.quantaflow/agents` now and returns the files that failed to load. */
+  reloadAgents(): Promise<string[]>;
   close(): Promise<void>;
 }
 
@@ -92,6 +95,35 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
 
   log.hydrate(store.listJobs(10_000));
   supervisor.recover();
+
+  // Agent files are re-read when they change, so `qf init` or an edited YAML file takes effect
+  // without a restart. Editors save in bursts, hence the short debounce.
+  const agentsDir = path.join(config.dataDir, "agents");
+  await mkdir(agentsDir, { recursive: true });
+  const reloadAgents = async (): Promise<string[]> => {
+    const result = await loadFileAgents(config);
+    agents.replaceFileAgents(result.agents);
+    return result.errors;
+  };
+  let reloadTimer: NodeJS.Timeout | undefined;
+  let watcher: FSWatcher | null = null;
+  try {
+    watcher = watch(agentsDir, () => {
+      clearTimeout(reloadTimer);
+      reloadTimer = setTimeout(() => {
+        reloadAgents()
+          .then((errors) => {
+            if (options.logWarnings === false) return;
+            for (const error of errors) console.warn(`[quantaflow] ${error}`);
+          })
+          .catch((error: unknown) => console.error("[quantaflow] Could not reload agents:", error));
+      }, 150);
+    });
+    watcher.on("error", () => watcher?.close());
+    watcher.unref();
+  } catch {
+    // Watching is a convenience. Without it, agent file changes apply on the next start.
+  }
 
   let boundPort = config.port;
   const server = await buildServer({
@@ -135,8 +167,11 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     warnings,
     supervisor,
     server,
+    reloadAgents,
     close() {
       closed ??= (async () => {
+        watcher?.close();
+        clearTimeout(reloadTimer);
         await supervisor.shutdown();
         await server.close();
         store.close();

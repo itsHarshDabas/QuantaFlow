@@ -52,6 +52,15 @@ importers:
         specifier: 8.18.3
         version: 8.18.3
 
+  packages/cli:
+    dependencies:
+      '@quantaflow/core':
+        specifier: workspace:*
+        version: link:../core
+      '@quantaflow/daemon':
+        specifier: workspace:*
+        version: link:../../apps/daemon
+
   packages/core:
     dependencies:
       zod:

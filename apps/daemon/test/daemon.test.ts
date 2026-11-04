@@ -270,6 +270,22 @@ describe("agents", () => {
     await client.deleteAgent("builder");
     expect((await client.agents()).map((a) => a.id)).toEqual(["researcher"]);
   });
+
+  it("picks up agent files added while running", async () => {
+    await boot();
+    expect(await client.agents()).toEqual([]);
+    await writeFile(
+      path.join(root, ".quantaflow", "agents", "writer.yaml"),
+      "name: Writer\nharness: fake\n",
+    );
+    await waitFor(
+      async () => (await client.agents()).some((a) => a.id === "writer" && a.source === "file"),
+      "the new agent file to load",
+    );
+    // An explicit reload reports broken files instead of dropping them silently.
+    await writeFile(path.join(root, ".quantaflow", "agents", "broken.yaml"), "harness: [\n");
+    expect((await daemon?.reloadAgents())?.some((e) => e.includes("broken.yaml"))).toBe(true);
+  });
 });
 
 describe("security", () => {

@@ -15,6 +15,14 @@ export class AgentDirectory extends EventEmitter<{ changed: [AgentProfile[]] }> 
     for (const agent of fileAgents) this.fileAgents.set(agent.id, agent);
   }
 
+  /** Swaps in a fresh read of the agent files and tells listeners if anything changed. */
+  replaceFileAgents(agents: AgentProfile[]): void {
+    const before = JSON.stringify([...this.fileAgents.values()]);
+    this.fileAgents.clear();
+    for (const agent of agents) this.fileAgents.set(agent.id, agent);
+    if (JSON.stringify([...this.fileAgents.values()]) !== before) this.emit("changed", this.list());
+  }
+
   list(): AgentProfile[] {
     const merged = new Map<string, AgentProfile>();
     for (const agent of this.store.listAgents()) merged.set(agent.id, agent);

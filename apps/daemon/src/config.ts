@@ -62,7 +62,8 @@ export async function loadConfig(
   for (const name of ["config.yaml", "config.yml", "config.json"]) {
     const candidate = path.join(dataDir, name);
     if (existsSync(candidate)) {
-      const parsed = ConfigFileSchema.safeParse(await readStructured(candidate));
+      // A file of only comments parses to null; treat it as empty.
+      const parsed = ConfigFileSchema.safeParse((await readStructured(candidate)) ?? {});
       if (!parsed.success) {
         throw new Error(`Invalid ${candidate}:\n${z.prettifyError(parsed.error)}`);
       }
