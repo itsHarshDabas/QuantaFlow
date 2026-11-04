@@ -1,4 +1,4 @@
-import type { Policy, PolicyAction, PolicyPreset, ToolKind } from "./schemas.js";
+import type { PermissionOption, Policy, PolicyAction, PolicyPreset, ToolKind } from "./schemas.js";
 
 export interface PermissionAskInfo {
   kind: ToolKind;
@@ -122,4 +122,25 @@ export function evaluatePolicy(policy: Policy, ask: PermissionAskInfo): PolicyVe
 
   const action = PRESET_DEFAULTS[policy.preset][ask.kind];
   return { action, reason: `${policy.preset} preset: ${ask.kind} is ${action}` };
+}
+
+/**
+ * Picks the harness's permission option that matches a decision.
+ * Returns undefined when the harness offered nothing suitable, which callers treat as a cancel.
+ */
+export function pickPermissionOption(
+  options: readonly PermissionOption[],
+  decision: "allow" | "allow_always" | "deny",
+): PermissionOption | undefined {
+  const order =
+    decision === "allow"
+      ? (["allow_once", "allow_always"] as const)
+      : decision === "allow_always"
+        ? (["allow_always", "allow_once"] as const)
+        : (["reject_once", "reject_always"] as const);
+  for (const kind of order) {
+    const match = options.find((o) => o.kind === kind);
+    if (match) return match;
+  }
+  return undefined;
 }

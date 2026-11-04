@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { evaluatePolicy } from "../src/policy.js";
+import { evaluatePolicy, pickPermissionOption } from "../src/policy.js";
 import type { Policy } from "../src/schemas.js";
 
 const safe: Policy = { preset: "safe", rules: [] };
@@ -68,5 +68,25 @@ describe("evaluatePolicy", () => {
     expect(
       evaluatePolicy(trusted, { kind: "execute", title: "git push origin qf/job" }).action,
     ).toBe("allow");
+  });
+});
+
+describe("pickPermissionOption", () => {
+  const allowOnce = { optionId: "a1", name: "Allow", kind: "allow_once" as const };
+  const options = [
+    allowOnce,
+    { optionId: "a2", name: "Always", kind: "allow_always" as const },
+    { optionId: "r1", name: "Reject", kind: "reject_once" as const },
+  ];
+
+  it("maps each decision to the matching option", () => {
+    expect(pickPermissionOption(options, "allow")?.optionId).toBe("a1");
+    expect(pickPermissionOption(options, "allow_always")?.optionId).toBe("a2");
+    expect(pickPermissionOption(options, "deny")?.optionId).toBe("r1");
+  });
+
+  it("falls back to the closest option, or nothing", () => {
+    expect(pickPermissionOption([allowOnce], "allow_always")?.optionId).toBe("a1");
+    expect(pickPermissionOption([allowOnce], "deny")).toBeUndefined();
   });
 });

@@ -1,0 +1,28 @@
+{
+  "name": "@quantaflow/drivers",
+  "version": "0.1.0",
+  "description": "Harness drivers for QuantaFlow: run any ACP agent and normalize its output into QuantaFlow events.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.4.0",
+    "@quantaflow/core": "workspace:*",
+    "@quantaflow/fake-agent": "workspace:*"
+  }
+}
