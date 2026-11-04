@@ -1,0 +1,25 @@
+{
+  "name": "@quantaflow/fake-agent",
+  "version": "0.1.0",
+  "description": "A scripted ACP agent with no model behind it, for demos and tests.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "bin": {
+    "qf-fake-agent": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@agentclientprotocol/sdk": "2.4.0"
+  }
+}
