@@ -32,12 +32,12 @@ real client, so every view works offline.
 
 ## Views
 
-| Route     | What it is for                                                                          |
-| --------- | --------------------------------------------------------------------------------------- |
-| `/table`  | Every job as a row, filterable by state and agent, with bulk cancel                     |
-| `/flow`   | Who started what: agents, orchestrator jobs, the jobs they spawned and `then` edges     |
-| `/orbit`  | You at the center; the closer a job sits, the sooner it needs you                       |
-| `/agents` | Agent profiles (create, edit, delete) and which harnesses are installed                 |
+| Route     | What it is for                                                                      |
+| --------- | ----------------------------------------------------------------------------------- |
+| `/table`  | Every job as a row, filterable by state and agent, with bulk cancel                 |
+| `/flow`   | Who started what: agents, orchestrator jobs, the jobs they spawned and `then` edges |
+| `/orbit`  | You at the center; the closer a job sits, the sooner it needs you                   |
+| `/agents` | Agent profiles (create, edit, delete) and which harnesses are installed             |
 
 The approvals queue is always on the left (a sheet on narrow screens). `?job=<id>` opens a job's
 drawer: chat with follow-ups, diff, raw events and logs.
