@@ -1,0 +1,30 @@
+{
+  "name": "@quantaflow/cli",
+  "version": "0.1.0",
+  "description": "qf: run, follow and approve QuantaFlow agent jobs from the terminal.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "qf": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@quantaflow/core": "workspace:*",
+    "@quantaflow/daemon": "workspace:*"
+  }
+}

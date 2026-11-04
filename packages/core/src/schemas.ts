@@ -120,11 +120,20 @@ export const Job = z.object({
   workspace: WorkspaceMode,
   workspacePath: z.string().nullable(),
   branch: z.string().nullable(),
+  /** Commit the worktree started from, so the diff covers committed and uncommitted work. */
+  baseRef: z.string().nullable(),
   portBase: z.number().int().nullable(),
   status: SessionState,
   error: z.string().nullable(),
   createdAt: z.number(),
   updatedAt: z.number(),
+  /** Workflow or orchestrator run this job belongs to. */
+  runId: z.string().nullable().default(null),
+  /** Job that spawned this one, such as an orchestrator. */
+  parentJobId: z.string().nullable().default(null),
+  /** Jobs that must finish as `done` before this one starts. */
+  dependsOn: z.array(z.string()).default([]),
+  role: z.enum(["worker", "orchestrator"]).default("worker"),
 });
 export type Job = z.infer<typeof Job>;
 
@@ -133,6 +142,10 @@ export const CreateJobInput = z.object({
   prompt: z.string().min(1).max(100_000),
   title: z.string().max(200).optional(),
   workspace: WorkspaceMode.optional(),
+  runId: z.string().max(64).optional(),
+  parentJobId: z.string().max(64).optional(),
+  dependsOn: z.array(z.string().max(64)).max(50).optional(),
+  role: z.enum(["worker", "orchestrator"]).optional(),
 });
 export type CreateJobInput = z.input<typeof CreateJobInput>;
 
@@ -170,7 +183,13 @@ export const QfEventData = z.discriminatedUnion("type", [
   z.object({ type: z.literal("job.created"), job: Job }),
   z.object({
     type: z.literal("job.updated"),
-    patch: Job.pick({ workspacePath: true, branch: true, portBase: true, error: true }).partial(),
+    patch: Job.pick({
+      workspacePath: true,
+      branch: true,
+      baseRef: true,
+      portBase: true,
+      error: true,
+    }).partial(),
   }),
   z.object({ type: z.literal("job.state"), state: SessionState, reason: z.string().optional() }),
   z.object({

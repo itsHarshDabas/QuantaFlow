@@ -12,11 +12,16 @@ const job: Job = {
   workspace: "folder",
   workspacePath: null,
   branch: null,
+  baseRef: null,
   portBase: null,
   status: "queued",
   error: null,
   createdAt: 1000,
   updatedAt: 1000,
+  runId: null,
+  parentJobId: null,
+  dependsOn: [],
+  role: "worker",
 };
 
 function events(...data: QfEventData[]): QfEvent[] {

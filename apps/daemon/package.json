@@ -1,0 +1,39 @@
+{
+  "name": "@quantaflow/daemon",
+  "version": "0.1.0",
+  "description": "The QuantaFlow daemon: runs agents, stores their events, applies policies and serves the API and web UI.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "quantaflowd": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@fastify/static": "10.1.9",
+    "@fastify/websocket": "11.3.7",
+    "@quantaflow/core": "workspace:*",
+    "@quantaflow/drivers": "workspace:*",
+    "fastify": "5.12.8",
+    "yaml": "2.9.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.1",
+    "ws": "8.18.3"
+  }
+}

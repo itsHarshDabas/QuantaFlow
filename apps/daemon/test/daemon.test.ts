@@ -1,0 +1,351 @@
+import { execFileSync } from "node:child_process";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
+import { tmpdir } from "node:os";
+import path from "node:path";
+import {
+  type AgentProfileInput,
+  type JobView,
+  type PendingApproval,
+  QfApiError,
+  QfClient,
+  type QfEvent,
+} from "@quantaflow/core";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import WebSocket from "ws";
+import { type RunningDaemon, startDaemon } from "../src/index.js";
+
+let root: string;
+let daemon: RunningDaemon | undefined;
+let client: QfClient;
+
+const FAKE = { fake: { env: { QF_FAKE_DELAY_MS: "0" } } };
+
+async function initGitRepo(dir: string): Promise<void> {
+  const git = (...args: string[]) => execFileSync("git", args, { cwd: dir, stdio: "ignore" });
+  git("init", "-q", "-b", "main");
+  git("config", "user.email", "test@example.com");
+  git("config", "user.name", "Test");
+  await writeFile(path.join(dir, "README.md"), "# Test project\n");
+  git("add", ".");
+  git("commit", "-q", "-m", "init");
+}
+
+async function boot(options: { git?: boolean } = {}): Promise<void> {
+  if (options.git !== false) await initGitRepo(root);
+  daemon = await startDaemon({
+    root,
+    port: 0,
+    webDist: false,
+    harnesses: FAKE,
+    logWarnings: false,
+  });
+  client = new QfClient({ baseUrl: daemon.url });
+}
+
+async function waitFor<T>(
+  probe: () => Promise<T | undefined | null | false>,
+  what: string,
+  ms = 10_000,
+): Promise<T> {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    const value = await probe();
+    if (value) return value;
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  throw new Error(`Timed out waiting for ${what}`);
+}
+
+const waitForStatus = (jobId: string, status: JobView["job"]["status"]) =>
+  waitFor(async () => {
+    const view = await client.job(jobId);
+    return view.job.status === status ? view : undefined;
+  }, `job ${jobId} to be ${status}`);
+
+const waitForApproval = (jobId: string, kind: PendingApproval["kind"]) =>
+  waitFor(
+    async () => (await client.approvals()).find((a) => a.jobId === jobId && a.kind === kind),
+    `a ${kind} approval`,
+  );
+
+const agent = (overrides: Partial<AgentProfileInput> = {}): AgentProfileInput => ({
+  id: "builder",
+  name: "Builder",
+  harness: "fake",
+  ...overrides,
+});
+
+function rawRequest(
+  pathname: string,
+  init: { method?: string; headers?: Record<string, string>; body?: string },
+): Promise<number> {
+  const url = new URL(pathname, daemon?.url);
+  return new Promise((resolve, reject) => {
+    const req = httpRequest(
+      {
+        host: url.hostname,
+        port: url.port,
+        path: url.pathname,
+        method: init.method ?? "GET",
+        headers: init.headers,
+      },
+      (res) => {
+        res.resume();
+        resolve(res.statusCode ?? 0);
+      },
+    );
+    req.on("error", reject);
+    req.end(init.body);
+  });
+}
+
+beforeEach(async () => {
+  root = await mkdtemp(path.join(tmpdir(), "qf-daemon-"));
+});
+
+afterEach(async () => {
+  await daemon?.close();
+  daemon = undefined;
+  await rm(root, { recursive: true, force: true });
+});
+
+describe("daemon end to end with the demo agent", () => {
+  it("runs a job in a worktree, applies policy, waits for approvals and produces a diff", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const job = await client.createJob({
+      agentId: "builder",
+      prompt: "Write a summary and run the tests",
+    });
+    expect(job.status).toBe("queued");
+
+    const edit = await waitForApproval(job.id, "edit");
+    expect((await client.job(job.id)).job.status).toBe("needs_input");
+    await client.decide(edit.id, "allow");
+
+    const run = await waitForApproval(job.id, "execute");
+    await client.decide(run.id, "deny");
+
+    const done = await waitForStatus(job.id, "done");
+    expect(done.job.branch).toBe(`qf/${job.id}`);
+    expect(done.job.workspacePath).toContain(path.join(".quantaflow", "state", "worktrees"));
+    expect(done.toolCalls).toBe(3);
+    expect(done.usage?.used).toBe(1200);
+    expect(done.lastMessage).toContain("All done");
+
+    const { events } = await client.events(job.id);
+    const resolved = events.filter((e) => e.type === "permission.resolved");
+    expect(resolved.map((e) => [e.by, e.outcome])).toEqual([
+      ["policy", "allowed"],
+      ["user", "allowed"],
+      ["user", "denied"],
+    ]);
+    const first = events.find((e) => e.type === "message" && e.role === "user");
+    expect(first).toMatchObject({ text: "Write a summary and run the tests" });
+
+    const diff = await client.diff(job.id);
+    expect(diff.available).toBe(true);
+    expect(diff.diff).toContain("QUANTAFLOW_DEMO.md");
+  });
+
+  it("takes a follow-up message in the same session", async () => {
+    await boot();
+    await client.createAgent(agent({ policy: { preset: "trusted", rules: [] } }));
+    const job = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    await waitForStatus(job.id, "done");
+    await client.sendMessage(job.id, "Do another pass");
+    await waitFor(async () => {
+      const { events } = await client.events(job.id);
+      return events.filter((e) => e.type === "turn.ended").length === 2;
+    }, "the second turn");
+    const view = await waitForStatus(job.id, "done");
+    expect(view.usage?.used).toBe(2400);
+  });
+
+  it("rejects a follow-up while the agent is busy", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const job = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    await waitForApproval(job.id, "edit");
+    await expect(client.sendMessage(job.id, "hurry up")).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("cancels a job that is waiting for approval", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const job = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    await waitForApproval(job.id, "edit");
+    await client.cancelJob(job.id);
+    const view = await waitForStatus(job.id, "cancelled");
+    expect(view.pendingApprovals).toBe(0);
+    expect(await client.approvals()).toEqual([]);
+  });
+
+  it("fails a job when the agent errors", async () => {
+    await boot();
+    await client.createAgent(agent({ policy: { preset: "trusted", rules: [] } }));
+    const job = await client.createJob({ agentId: "builder", prompt: "please fail" });
+    const view = await waitForStatus(job.id, "failed");
+    expect(view.job.error).toMatch(/Simulated failure/);
+  });
+
+  it("uses a folder when the project is not a git repository", async () => {
+    await boot({ git: false });
+    await client.createAgent(agent({ policy: { preset: "trusted", rules: [] } }));
+    const job = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    const view = await waitForStatus(job.id, "done");
+    expect(view.job.workspace).toBe("worktree");
+    expect(view.job.branch).toBeNull();
+    expect(view.job.workspacePath).toContain(path.join(".quantaflow", "state", "workspaces"));
+    const { events } = await client.events(job.id);
+    expect(events.some((e) => e.type === "notice" && /folder/.test(e.title))).toBe(true);
+    expect(await client.diff(job.id)).toMatchObject({ available: false });
+  });
+
+  it("starts a job only after its dependencies are done", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const first = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    const second = await client.createJob({
+      agentId: "builder",
+      prompt: "Write a summary",
+      dependsOn: [first.id],
+    });
+    const approval = await waitForApproval(first.id, "edit");
+    expect((await client.job(second.id)).job.status).toBe("queued");
+    await client.decide(approval.id, "allow");
+    await waitForStatus(first.id, "done");
+    await waitForApproval(second.id, "edit");
+    await expect(
+      client.createJob({ agentId: "builder", prompt: "x", dependsOn: ["job_missing"] }),
+    ).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("streams events over the WebSocket", async () => {
+    await boot();
+    await client.createAgent(agent({ policy: { preset: "trusted", rules: [] } }));
+    const socket = new WebSocket(client.streamUrl());
+    const received: { type: string; event?: QfEvent }[] = [];
+    socket.on("message", (data) => received.push(JSON.parse(String(data))));
+    await new Promise((resolve) => socket.once("open", resolve));
+    const job = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    await waitFor(
+      async () => received.some((m) => m.event?.type === "job.state" && m.event.state === "done"),
+      "a done event on the stream",
+    );
+    socket.close();
+    expect(received[0]?.type).toBe("hello");
+    const seqs = received.flatMap((m) => (m.event ? [m.event.seq] : []));
+    expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+    expect(received.every((m) => !m.event || m.event.jobId === job.id)).toBe(true);
+  });
+});
+
+describe("agents", () => {
+  it("validates agents and protects file-defined ones", async () => {
+    await mkdir(path.join(root, ".quantaflow", "agents"), { recursive: true });
+    await writeFile(
+      path.join(root, ".quantaflow", "agents", "researcher.yaml"),
+      "name: Researcher\nharness: fake\nworkspace: folder\npolicy:\n  preset: readonly\n",
+    );
+    await writeFile(path.join(root, ".quantaflow", "agents", "broken.yaml"), "name: 42\n");
+    await boot();
+    expect(daemon?.warnings.some((w) => w.includes("broken.yaml"))).toBe(true);
+
+    const agents = await client.agents();
+    expect(agents).toEqual([
+      expect.objectContaining({ id: "researcher", source: "file", workspace: "folder" }),
+    ]);
+    await expect(client.deleteAgent("researcher")).rejects.toMatchObject({ status: 409 });
+    await expect(client.createAgent(agent({ harness: "nope" }))).rejects.toMatchObject({
+      status: 400,
+    });
+    await expect(client.createAgent(agent({ id: "Bad Id" }))).rejects.toBeInstanceOf(QfApiError);
+
+    await client.createAgent(agent());
+    await expect(client.createAgent(agent())).rejects.toMatchObject({ status: 409 });
+    const updated = await client.updateAgent("builder", agent({ name: "Builder 2" }));
+    expect(updated.name).toBe("Builder 2");
+    await client.deleteAgent("builder");
+    expect((await client.agents()).map((a) => a.id)).toEqual(["researcher"]);
+  });
+
+  it("picks up agent files added while running", async () => {
+    await boot();
+    expect(await client.agents()).toEqual([]);
+    await writeFile(
+      path.join(root, ".quantaflow", "agents", "writer.yaml"),
+      "name: Writer\nharness: fake\n",
+    );
+    await waitFor(
+      async () => (await client.agents()).some((a) => a.id === "writer" && a.source === "file"),
+      "the new agent file to load",
+    );
+    // An explicit reload reports broken files instead of dropping them silently.
+    await writeFile(path.join(root, ".quantaflow", "agents", "broken.yaml"), "harness: [\n");
+    expect((await daemon?.reloadAgents())?.some((e) => e.includes("broken.yaml"))).toBe(true);
+  });
+});
+
+describe("security", () => {
+  it("rejects foreign hosts, foreign origins and non-JSON bodies", async () => {
+    await boot();
+    const port = String(daemon?.port);
+    expect(await rawRequest("/api/state", { headers: { host: `evil.example:${port}` } })).toBe(403);
+    expect(await rawRequest("/api/state", { headers: { host: `127.0.0.1:${port}` } })).toBe(200);
+    expect(
+      await rawRequest("/api/agents", {
+        method: "POST",
+        headers: { host: `127.0.0.1:${port}`, "content-type": "text/plain" },
+        body: JSON.stringify(agent()),
+      }),
+    ).toBe(415);
+    expect(
+      await rawRequest("/api/agents", {
+        method: "POST",
+        headers: {
+          host: `127.0.0.1:${port}`,
+          origin: "https://evil.example",
+          "content-type": "application/json",
+        },
+        body: JSON.stringify(agent()),
+      }),
+    ).toBe(403);
+
+    const socket = new WebSocket(client.streamUrl(), { origin: "https://evil.example" });
+    const outcome = await new Promise<string>((resolve) => {
+      socket.once("open", () => resolve("open"));
+      socket.once("unexpected-response", (_req, res) => resolve(String(res.statusCode)));
+      socket.once("error", () => resolve("error"));
+    });
+    socket.terminate();
+    expect(outcome).toBe("403");
+  });
+});
+
+describe("restart", () => {
+  it("keeps history and marks interrupted jobs as failed", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const job = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    await waitForApproval(job.id, "edit");
+    await daemon?.close();
+
+    daemon = await startDaemon({
+      root,
+      port: 0,
+      webDist: false,
+      harnesses: FAKE,
+      logWarnings: false,
+    });
+    client = new QfClient({ baseUrl: daemon.url });
+    const view = await client.job(job.id);
+    expect(view.job.status).toBe("failed");
+    expect(view.job.error).toMatch(/Interrupted/);
+    expect((await client.agents()).map((a) => a.id)).toEqual(["builder"]);
+    const state = await client.state();
+    expect(state.jobs).toHaveLength(1);
+    expect(state.lastSeq).toBeGreaterThan(0);
+  });
+});
