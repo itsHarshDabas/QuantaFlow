@@ -208,6 +208,12 @@ export class Renderer {
       case "turn.ended":
         if (this.options.verbose) this.line(s.dim(`turn ended: ${event.stopReason}`));
         return;
+      case "workspace.merged":
+        this.line(s.green(`✓ Merged into ${event.into} (${event.commit.slice(0, 10)})`));
+        return;
+      case "workspace.discarded":
+        this.line(s.dim("– Workspace discarded"));
+        return;
       case "job.created":
         return;
     }

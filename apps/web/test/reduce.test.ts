@@ -29,6 +29,7 @@ const job = (id: string, extra: Partial<Job> = {}): Job => ({
   parentJobId: null,
   dependsOn: [],
   role: "worker",
+  workspaceState: "active",
   ...extra,
 });
 

@@ -111,6 +111,26 @@ export const AgentProfile = AgentProfileInput.extend({
 });
 export type AgentProfile = z.infer<typeof AgentProfile>;
 
+export const WorkspaceState = z.enum(["active", "merged", "discarded"]);
+export type WorkspaceState = z.infer<typeof WorkspaceState>;
+
+export const MergeStrategy = z.enum(["merge", "squash"]);
+export type MergeStrategy = z.infer<typeof MergeStrategy>;
+
+export const MergeInput = z.object({
+  strategy: MergeStrategy.default("merge"),
+  /** Commit message. Defaults to one naming the job. */
+  message: z.string().min(1).max(5000).optional(),
+});
+export type MergeInput = z.input<typeof MergeInput>;
+
+export interface MergeResult {
+  commit: string;
+  /** The branch the job was merged into: the one checked out in the project root. */
+  into: string;
+  strategy: MergeStrategy;
+}
+
 export const Job = z.object({
   id: z.string(),
   title: z.string(),
@@ -134,6 +154,8 @@ export const Job = z.object({
   /** Jobs that must finish as `done` before this one starts. */
   dependsOn: z.array(z.string()).default([]),
   role: z.enum(["worker", "orchestrator"]).default("worker"),
+  /** What happened to the job's workspace: still there, merged into the project, or removed. */
+  workspaceState: WorkspaceState.default("active"),
 });
 export type Job = z.infer<typeof Job>;
 
@@ -248,6 +270,13 @@ export const QfEventData = z.discriminatedUnion("type", [
   }),
   z.object({ type: z.literal("log"), stream: z.enum(["stderr", "system"]), text: z.string() }),
   z.object({ type: z.literal("turn.ended"), stopReason: z.string() }),
+  z.object({
+    type: z.literal("workspace.merged"),
+    commit: z.string(),
+    into: z.string(),
+    strategy: MergeStrategy,
+  }),
+  z.object({ type: z.literal("workspace.discarded") }),
 ]);
 export type QfEventData = z.infer<typeof QfEventData>;
 export type QfEventType = QfEventData["type"];

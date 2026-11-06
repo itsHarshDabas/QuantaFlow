@@ -169,6 +169,7 @@ const view = (
     parentJobId: null,
     dependsOn: [],
     role: "worker",
+    workspaceState: "active",
   },
   lastMessage: "",
   toolCalls: 0,

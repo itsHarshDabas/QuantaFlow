@@ -325,6 +325,7 @@ export class DemoBackend implements Backend {
       parentJobId: spec.parentJobId ?? null,
       dependsOn: spec.dependsOn ?? [],
       role: spec.role ?? "worker",
+      workspaceState: "active",
     };
     const sim: Sim = {
       job,
