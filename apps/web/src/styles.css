@@ -1,0 +1,203 @@
+@import "tailwindcss";
+
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+/*
+ * Tokens. Amber means "your turn" and nothing else: approvals and agents waiting on you.
+ * Every other color is a quiet state signal.
+ */
+:root {
+  --canvas: #e6eaee;
+  --surface: #f6f8f9;
+  --raised: #edf1f4;
+  --sunken: #dde3e8;
+  --line: #cbd3da;
+  --line-strong: #aeb9c3;
+  --ink: #16212a;
+  --ink-muted: #52606c;
+  --ink-faint: #7c8893;
+
+  --amber: #e89a1e;
+  --amber-ink: #2e1d00;
+  --amber-text: #8f5400;
+  --amber-soft: #fbebd0;
+
+  --run: #2f6faf;
+  --run-soft: #dce8f4;
+  --ok: #3e8a5c;
+  --ok-soft: #ddefe3;
+  --stop: #b83e33;
+  --stop-soft: #f6dedb;
+  --wait: #6f7d89;
+  --wait-soft: #e1e6ea;
+
+  --diff-add: #e3f2e7;
+  --diff-del: #f8e3e1;
+
+  color-scheme: light;
+}
+
+:root[data-theme="dark"] {
+  --canvas: #141d25;
+  --surface: #1a252f;
+  --raised: #22303c;
+  --sunken: #111921;
+  --line: #2c3a47;
+  --line-strong: #3f5060;
+  --ink: #e3e9ee;
+  --ink-muted: #9aa8b4;
+  --ink-faint: #6e7c88;
+
+  --amber: #e89a1e;
+  --amber-ink: #241600;
+  --amber-text: #f2b357;
+  --amber-soft: #3a2c14;
+
+  --run: #5a9bdb;
+  --run-soft: #1d3347;
+  --ok: #5db07f;
+  --ok-soft: #1b3326;
+  --stop: #e0675b;
+  --stop-soft: #3d2220;
+  --wait: #8593a0;
+  --wait-soft: #253240;
+
+  --diff-add: #173022;
+  --diff-del: #3a1d1c;
+
+  color-scheme: dark;
+}
+
+@theme inline {
+  --font-sans:
+    "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    sans-serif;
+  --font-mono:
+    "Atkinson Hyperlegible Mono Variable", ui-monospace, "SFMono-Regular", Menlo, Consolas,
+    monospace;
+
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-raised: var(--raised);
+  --color-sunken: var(--sunken);
+  --color-line: var(--line);
+  --color-line-strong: var(--line-strong);
+  --color-ink: var(--ink);
+  --color-ink-muted: var(--ink-muted);
+  --color-ink-faint: var(--ink-faint);
+  --color-amber: var(--amber);
+  --color-amber-ink: var(--amber-ink);
+  --color-amber-text: var(--amber-text);
+  --color-amber-soft: var(--amber-soft);
+  --color-run: var(--run);
+  --color-run-soft: var(--run-soft);
+  --color-ok: var(--ok);
+  --color-ok-soft: var(--ok-soft);
+  --color-stop: var(--stop);
+  --color-stop-soft: var(--stop-soft);
+  --color-wait: var(--wait);
+  --color-wait-soft: var(--wait-soft);
+  --color-diff-add: var(--diff-add);
+  --color-diff-del: var(--diff-del);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    background: var(--canvas);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: "tnum" 0;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--run);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background: var(--run-soft);
+  }
+
+  dialog::backdrop {
+    background: rgb(10 16 22 / 0.45);
+  }
+}
+
+@utility tabular {
+  font-variant-numeric: tabular-nums;
+}
+
+/* The one ambient motion in the app: a lamp that is waiting on you. */
+@keyframes qf-beacon {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  70%,
+  100% {
+    opacity: 0;
+    transform: scale(2.4);
+  }
+}
+
+@utility beacon {
+  animation: qf-beacon 1.8s ease-out infinite;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+
+/* Reduced motion has to beat every component's own transition, hence !important. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    /* biome-ignore lint/complexity/noImportantStyles: must override component styles */
+    animation-duration: 0.01ms !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must override component styles */
+    animation-iteration-count: 1 !important;
+    /* biome-ignore lint/complexity/noImportantStyles: must override component styles */
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* React Flow, tuned to the tokens. */
+.qf-flow {
+  --xy-background-color: transparent;
+  --xy-edge-label-background-color: var(--canvas);
+  --xy-controls-button-background-color: var(--surface);
+  --xy-controls-button-background-color-hover: var(--raised);
+  --xy-controls-button-color: var(--ink-muted);
+  --xy-controls-button-color-hover: var(--ink);
+  --xy-controls-button-border-color: var(--line);
+  --xy-controls-box-shadow: none;
+}
+
+.qf-flow .react-flow__controls {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.qf-flow .react-flow__node:focus-visible {
+  outline: 2px solid var(--run);
+  outline-offset: 3px;
+  border-radius: 2px;
+}
+
+.qf-flow .react-flow__attribution {
+  background: transparent;
+  font-size: 10px;
+}
+
+.qf-flow .react-flow__attribution a {
+  color: var(--ink-faint);
+}
