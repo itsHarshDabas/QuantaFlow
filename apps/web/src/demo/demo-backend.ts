@@ -17,6 +17,8 @@ import {
   TERMINAL_STATES,
 } from "@quantaflow/core";
 import type { Backend } from "../lib/backend";
+import { parseUnifiedDiff } from "../lib/diff";
+import type { MergeResult, MergeStrategy, WorkspaceState } from "../lib/review";
 import {
   DEMO_AGENTS,
   DEMO_HARNESSES,
@@ -43,6 +45,7 @@ interface Sim {
   /** The worktree diff so far, and what it becomes once the agent's edits are allowed. */
   diff: string | null;
   finalDiff: string | null;
+  workspaceState: WorkspaceState;
   startAfter: number;
   /** Extra ticks to wait before the next step, so turns don't feel mechanical. */
   rest: number;
@@ -57,6 +60,8 @@ const demoId = (prefix: string) => `${prefix}_demo${(++counter).toString(36).pad
  */
 export class DemoBackend implements Backend {
   private seq = 0;
+  /** Files already merged into the demo project, so a second job touching them conflicts. */
+  private mergedPaths = new Set<string>();
   private clock: number | null = null;
   private readonly listeners = new Set<StreamHandlers>();
   private agentList: AgentProfile[] = structuredClone(DEMO_AGENTS);
@@ -76,7 +81,10 @@ export class DemoBackend implements Backend {
       root: ROOT,
       agents: structuredClone(this.agentList),
       harnesses: structuredClone(DEMO_HARNESSES),
-      jobs: [...this.sims.values()].map((sim) => foldJob(sim.job, sim.events)),
+      jobs: [...this.sims.values()].map((sim) => {
+        const view = foldJob(sim.job, sim.events);
+        return { ...view, job: { ...view.job, workspaceState: sim.workspaceState } };
+      }),
       approvals: [...this.pending.values()],
       lastSeq: this.seq,
     };
@@ -175,6 +183,55 @@ export class DemoBackend implements Backend {
     }
     sim.waiting = null;
     this.setState(sim, "cancelled", "Cancelled by you");
+    return { ok: true };
+  }
+
+  async merge(jobId: string, body: { strategy: MergeStrategy }): Promise<MergeResult> {
+    const sim = this.require(jobId);
+    if (sim.job.workspace !== "worktree") {
+      throw new QfApiError(400, "Only jobs with their own git worktree can be merged.");
+    }
+    const refuse = (reason: string, conflicts?: string[]) => {
+      throw new QfApiError(409, reason, { reason, ...(conflicts ? { conflicts } : {}) });
+    };
+    if (sim.workspaceState !== "active")
+      refuse(`This job's workspace was already ${sim.workspaceState}.`);
+    if (!STOPPABLE.has(sim.status))
+      refuse("The job is still running. Wait for it to stop, or cancel it.");
+    const paths = parseUnifiedDiff(sim.diff ?? "").map((file) => file.path);
+    if (paths.length === 0) refuse("The job's branch has no changes to merge.");
+    const conflicts = paths.filter((path) => this.mergedPaths.has(path));
+    if (conflicts.length > 0) {
+      refuse("The merge has conflicts with work already merged into main.", conflicts);
+    }
+    for (const path of paths) this.mergedPaths.add(path);
+    const commit = Array.from({ length: 40 }, () =>
+      Math.floor(Math.random() * 16).toString(16),
+    ).join("");
+    sim.workspaceState = "merged";
+    this.emit(sim, {
+      type: "workspace.merged",
+      commit,
+      into: "main",
+      strategy: body.strategy,
+    } as unknown as QfEventData);
+    return { commit, into: "main" };
+  }
+
+  async discard(jobId: string): Promise<{ ok: true }> {
+    const sim = this.require(jobId);
+    if (sim.job.workspace === "cwd") {
+      throw new QfApiError(
+        400,
+        "This job works in the project root, so there is nothing to discard.",
+      );
+    }
+    if (!STOPPABLE.has(sim.status)) {
+      throw new QfApiError(409, "The job is still running. Cancel it first.");
+    }
+    sim.workspaceState = "discarded";
+    sim.diff = null;
+    this.emit(sim, { type: "workspace.discarded" } as unknown as QfEventData);
     return { ok: true };
   }
 
@@ -338,6 +395,7 @@ export class DemoBackend implements Backend {
       waiting: null,
       diff: null,
       finalDiff: spec.diff ?? null,
+      workspaceState: "active",
       startAfter: 0,
       rest: 0,
     };
@@ -788,6 +846,8 @@ export class DemoBackend implements Backend {
     this.clock = null;
   }
 }
+
+const STOPPABLE = new Set<SessionState>(["done", "idle", "failed", "cancelled"]);
 
 function firstLine(text: string): string {
   const line = text.trim().split("\n")[0] ?? "";

@@ -8,13 +8,24 @@ import {
   type SortingState,
   useReactTable,
 } from "@tanstack/react-table";
-import { ArrowDown, ArrowUp, Folder, FolderGit2, FolderRoot, Search, X } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  Folder,
+  FolderGit2,
+  FolderRoot,
+  GitMerge,
+  Search,
+  Trash2,
+  X,
+} from "lucide-react";
 import { useMemo, useRef, useState } from "react";
 import { Button, cx, Empty, StateTag } from "../../components/ui";
 import { api } from "../../lib/backend";
 import { errorMessage } from "../../lib/errors";
 import { formatAgo, formatCost, formatDuration, plural } from "../../lib/format";
 import { harnessLabel, useAgentMap, useHarnessMap, useNow } from "../../lib/hooks";
+import { workspaceState } from "../../lib/review";
 import { openJob } from "../../lib/router";
 import {
   byUrgency,
@@ -38,6 +49,21 @@ declare module "@tanstack/react-table" {
 
 function WorkspaceCell({ view }: { view: JobView }) {
   const { job } = view;
+  const state = workspaceState(view);
+  if (state !== "active") {
+    const Icon = state === "merged" ? GitMerge : Trash2;
+    return (
+      <span
+        className={cx(
+          "flex items-center gap-1.5 text-xs",
+          state === "merged" ? "text-ok" : "text-ink-faint",
+        )}
+      >
+        <Icon className="size-3.5 shrink-0" aria-hidden />
+        {state === "merged" ? "Merged" : "Discarded"}
+      </span>
+    );
+  }
   if (job.workspace === "worktree") {
     return (
       <span
