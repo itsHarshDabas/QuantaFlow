@@ -35,7 +35,7 @@ qf run demo "write a summary and run the tests"     # no model or API key needed
   Branch qf/job_k3x9… · review the changes with `qf diff job_k3x9…`
 ```
 
-The job ran in its own git worktree on branch `qf/<job id>`, so your checkout is untouched. Review it with `qf diff last`, continue with `qf say last "…"`, and merge the branch when you're happy.
+The job ran in its own git worktree on branch `qf/<job id>`, so your checkout is untouched. Review it with `qf diff last`, continue with `qf say last "…"`, then `qf merge last` to bring it into your branch and `qf discard last` to clean up.
 
 For real work, use the `assistant` agent (Claude Code) or add your own. Each harness needs its own CLI installed and signed in; `qf harnesses` shows which ones QuantaFlow found and how to install the rest.
 
@@ -68,6 +68,8 @@ qf attach last                             # follow a job and answer its approva
 | `qf attach <job>`                 | Follow a running job and answer its approvals                                       |
 | `qf say <job> <message…>`         | Send a follow-up and follow the reply                                               |
 | `qf diff <job>`                   | The job's changes against the commit it started from, including new files           |
+| `qf merge <job> [--squash]`       | Commit the job's work and merge its branch into the branch you have checked out     |
+| `qf discard <job>`                | Delete a stopped job's worktree and branch, or its folder                           |
 | `qf cancel <job>`                 | Stop a job                                                                          |
 | `qf approvals`                    | Everything waiting for you, from every job                                          |
 | `qf approve <id> [--always]`      | Allow a waiting tool call                                                           |

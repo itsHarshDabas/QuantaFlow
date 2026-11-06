@@ -86,6 +86,10 @@ export function applyEvent(view: JobView, event: QfEvent, previous?: QfEvent): J
       return { ...next, pendingApprovals: Math.max(0, view.pendingApprovals - 1) };
     case "usage":
       return { ...next, usage: event.usage };
+    case "workspace.merged":
+      return { ...next, job: { ...view.job, workspaceState: "merged", updatedAt: event.ts } };
+    case "workspace.discarded":
+      return { ...next, job: { ...view.job, workspaceState: "discarded", updatedAt: event.ts } };
     default:
       return next;
   }
@@ -249,6 +253,25 @@ export function buildTranscript(events: readonly QfEvent[]): TranscriptItem[] {
           severity: event.severity,
           title: event.title,
           ...(event.description ? { description: event.description } : {}),
+          ts: event.ts,
+        });
+        break;
+      case "workspace.merged":
+        items.push({
+          kind: "notice",
+          key: `w${event.seq}`,
+          severity: "info",
+          title: `Merged into ${event.into}`,
+          description: `${event.strategy === "squash" ? "Squashed as" : "Merge commit"} ${event.commit.slice(0, 10)}`,
+          ts: event.ts,
+        });
+        break;
+      case "workspace.discarded":
+        items.push({
+          kind: "notice",
+          key: `w${event.seq}`,
+          severity: "info",
+          title: "Workspace discarded",
           ts: event.ts,
         });
         break;

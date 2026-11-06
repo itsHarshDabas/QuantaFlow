@@ -186,6 +186,39 @@ describe("qf against a running daemon", () => {
     expect(attach.out()).toContain("– Cancelled");
   });
 
+  it("merges a finished job, explains conflicts, and discards", async () => {
+    await qf(["agent", "add", "builder", "--harness", "fake"]);
+    const first = terminal({ interactive: true, answers: ["y"] });
+    expect(await qf(["run", "builder", "First summary"], first)).toBe(0);
+    expect(first.out()).toMatch(/then `qf merge job_\w+`/);
+    const second = terminal({ interactive: true, answers: ["y"] });
+    expect(await qf(["run", "builder", "Second summary"], second)).toBe(0);
+
+    const jobs = (await new QfClient({ baseUrl: url }).jobs()).sort(
+      (a, b) => a.job.createdAt - b.job.createdAt,
+    );
+    const [a, b] = jobs.map((v) => v.job.id);
+
+    const merge = terminal();
+    expect(await qf(["merge", a ?? "", "--squash", "-m", "Add the summary"], merge)).toBe(0);
+    expect(merge.out()).toMatch(/✓ Squashed qf\/job_\w+ into main as [0-9a-f]{10}\./);
+    expect(
+      execFileSync("git", ["log", "-1", "--format=%s"], { cwd: root, encoding: "utf8" }).trim(),
+    ).toBe("Add the summary");
+
+    const clash = terminal();
+    expect(await qf(["merge", b ?? ""], clash)).toBe(1);
+    expect(clash.err()).toContain("conflicts in 1 file(s)");
+    expect(clash.err()).toContain("  QUANTAFLOW_DEMO.md");
+
+    const discard = terminal();
+    expect(await qf(["discard", b ?? ""], discard)).toBe(0);
+    expect(discard.out()).toContain(`Discarded the worktree and branch qf/${b}`);
+    const show = terminal();
+    await qf(["show", b ?? ""], show);
+    expect(show.out()).toContain("– Workspace discarded");
+  });
+
   it("explains mistakes instead of failing obscurely", async () => {
     const unknown = terminal();
     expect(await qf(["frobnicate"], unknown)).toBe(2);

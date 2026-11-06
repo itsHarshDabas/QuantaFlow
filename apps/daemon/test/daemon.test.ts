@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -347,5 +348,100 @@ describe("restart", () => {
     const state = await client.state();
     expect(state.jobs).toHaveLength(1);
     expect(state.lastSeq).toBeGreaterThan(0);
+  });
+});
+
+describe("merge and discard", () => {
+  const git = (...args: string[]) =>
+    execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+
+  async function finishedJob(prompt: string): Promise<string> {
+    const job = await client.createJob({ agentId: "builder", prompt });
+    const edit = await waitForApproval(job.id, "edit");
+    await client.decide(edit.id, "allow");
+    await waitForStatus(job.id, "done");
+    return job.id;
+  }
+
+  it("commits the agent's work and merges it into the checked-out branch", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const busy = await client.createJob({ agentId: "builder", prompt: "Write a summary" });
+    await waitForApproval(busy.id, "edit");
+    await expect(client.merge(busy.id)).rejects.toMatchObject({ status: 409 });
+    await client.cancelJob(busy.id);
+
+    const id = await finishedJob("Write a summary");
+    const events: QfEvent[] = [];
+    const socket = new WebSocket(client.streamUrl());
+    socket.on("message", (data) => {
+      const message = JSON.parse(String(data));
+      if (message.type === "event") events.push(message.event);
+    });
+    await new Promise((r) => socket.once("open", r));
+
+    const result = await client.merge(id);
+    expect(result).toMatchObject({ into: "main", strategy: "merge" });
+    expect(git("rev-parse", "HEAD")).toBe(result.commit);
+    expect(git("log", "-1", "--format=%P").split(" ")).toHaveLength(2); // a real merge commit
+    expect(git("show", "HEAD:QUANTAFLOW_DEMO.md")).toContain("QuantaFlow demo");
+    expect(git("status", "--porcelain", "--untracked-files=no")).toBe("");
+    expect((await client.job(id)).job.workspaceState).toBe("merged");
+    await waitFor(async () => events.some((e) => e.type === "workspace.merged"), "the event");
+    socket.close();
+
+    await expect(client.merge(id)).rejects.toMatchObject({
+      status: 409,
+      body: { details: { reason: "empty" } },
+    });
+
+    await client.discard(id);
+    const view = await client.job(id);
+    expect(view.job.workspaceState).toBe("discarded");
+    expect(existsSync(view.job.workspacePath ?? "")).toBe(false);
+    expect(git("branch", "--list", `qf/${id}`)).toBe("");
+    await expect(client.sendMessage(id, "more")).rejects.toMatchObject({ status: 409 });
+    await expect(client.discard(id)).rejects.toMatchObject({ status: 409 });
+  });
+
+  it("squashes, refuses a dirty root and aborts a conflicting merge", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const first = await finishedJob("First summary");
+    const second = await finishedJob("Second summary");
+
+    await writeFile(path.join(root, "README.md"), "# Edited by hand\n");
+    await expect(client.merge(first)).rejects.toMatchObject({
+      status: 409,
+      body: { details: { reason: "dirty", files: ["README.md"] } },
+    });
+    git("checkout", "README.md");
+
+    const squashed = await client.merge(first, { strategy: "squash", message: "Add the summary" });
+    expect(git("log", "-1", "--format=%s%n%P")).toBe(
+      `Add the summary\n${git("rev-parse", "HEAD~1")}`,
+    );
+    expect(squashed.commit).toBe(git("rev-parse", "HEAD"));
+
+    // Both jobs wrote QUANTAFLOW_DEMO.md differently, so the second merge conflicts.
+    const before = git("rev-parse", "HEAD");
+    await expect(client.merge(second)).rejects.toMatchObject({
+      status: 409,
+      body: { details: { reason: "conflict", conflicts: ["QUANTAFLOW_DEMO.md"] } },
+    });
+    expect(git("rev-parse", "HEAD")).toBe(before);
+    expect(git("status", "--porcelain", "--untracked-files=no")).toBe("");
+    expect((await client.job(second)).job.workspaceState).toBe("active");
+  });
+
+  it("only merges worktree jobs, and discards folder jobs", async () => {
+    await boot({ git: false });
+    await client.createAgent(agent({ workspace: "folder" }));
+    const id = await finishedJob("Write a summary");
+    await expect(client.merge(id)).rejects.toMatchObject({ status: 400 });
+    const folder = (await client.job(id)).job.workspacePath ?? "";
+    expect(existsSync(folder)).toBe(true);
+    await client.discard(id);
+    expect(existsSync(folder)).toBe(false);
   });
 });

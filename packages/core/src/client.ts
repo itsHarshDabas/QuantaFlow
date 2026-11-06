@@ -5,6 +5,8 @@ import type {
   CreateJobInput,
   HarnessInfo,
   Job,
+  MergeInput,
+  MergeResult,
   PendingApproval,
   QfEvent,
 } from "./schemas.js";
@@ -137,6 +139,16 @@ export class QfClient {
 
   cancelJob(jobId: string): Promise<{ ok: true }> {
     return this.request("POST", `/api/jobs/${encodeURIComponent(jobId)}/cancel`, {});
+  }
+
+  /** Merges a finished worktree job's branch into the branch checked out in the project root. */
+  merge(jobId: string, input: MergeInput = {}): Promise<MergeResult> {
+    return this.request("POST", `/api/jobs/${encodeURIComponent(jobId)}/merge`, input);
+  }
+
+  /** Removes a stopped job's worktree and branch, or its folder. */
+  discard(jobId: string): Promise<{ ok: true }> {
+    return this.request("POST", `/api/jobs/${encodeURIComponent(jobId)}/discard`, {});
   }
 
   diff(jobId: string): Promise<DiffResult> {

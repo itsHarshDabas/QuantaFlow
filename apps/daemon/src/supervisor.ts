@@ -4,6 +4,8 @@ import {
   canTransition,
   evaluatePolicy,
   type Job,
+  MergeInput,
+  type MergeResult,
   newId,
   pickPermissionOption,
   type SessionState,
@@ -161,6 +163,7 @@ export class Supervisor {
       parentJobId,
       dependsOn,
       role: parsed.data.role ?? "worker",
+      workspaceState: "active",
     };
     this.o.store.saveJob(job);
     this.o.log.append(job.id, { type: "job.created", job });
@@ -178,11 +181,55 @@ export class Supervisor {
     if (live?.busy || live?.closing || job.status === "queued" || job.status === "starting") {
       throw conflict("The agent is still working. Wait for it to finish, or cancel it first.");
     }
+    if (job.workspaceState === "discarded") {
+      throw conflict("This job's workspace was discarded, so it can't continue. Start a new job.");
+    }
     if (live?.session && !live.session.closed) {
       void this.runTurn(live, text, text);
       return;
     }
     void this.start(jobId, { text, restarted: job.workspacePath !== null });
+  }
+
+  /** A job's workspace can be merged or discarded only while nothing runs in it. */
+  private stoppedJob(jobId: string, action: string): Job {
+    const job = this.o.store.getJob(jobId);
+    if (!job) throw notFound(`Job "${jobId}"`);
+    const live = this.live.get(jobId);
+    const stopped = TERMINAL_STATES.has(job.status) || job.status === "idle";
+    if (!stopped || live?.busy) {
+      throw conflict(
+        `The job is still ${job.status}. Wait for it to finish or cancel it, then ${action}.`,
+        {
+          reason: "running",
+        },
+      );
+    }
+    if (job.workspaceState === "discarded") {
+      throw conflict("The job's workspace was already discarded.", { reason: "discarded" });
+    }
+    return job;
+  }
+
+  async merge(jobId: string, input: unknown): Promise<MergeResult> {
+    const parsed = MergeInput.safeParse(input ?? {});
+    if (!parsed.success) throw badRequest("Invalid merge request", parsed.error.issues);
+    const job = this.stoppedJob(jobId, "merge");
+    const result = await this.o.workspaces.merge(job, parsed.data.strategy, parsed.data.message);
+    const latest = this.o.store.getJob(jobId) ?? job;
+    this.o.store.saveJob({ ...latest, workspaceState: "merged", updatedAt: Date.now() });
+    this.o.log.append(jobId, { type: "workspace.merged", ...result });
+    return result;
+  }
+
+  async discard(jobId: string): Promise<void> {
+    const job = this.stoppedJob(jobId, "discard it");
+    const live = this.live.get(jobId);
+    if (live) await this.close(live); // An idle session still has its cwd in the workspace.
+    await this.o.workspaces.discard(job);
+    const latest = this.o.store.getJob(jobId) ?? job;
+    this.o.store.saveJob({ ...latest, workspaceState: "discarded", updatedAt: Date.now() });
+    this.o.log.append(jobId, { type: "workspace.discarded" });
   }
 
   async cancel(jobId: string, reason = "Cancelled by you"): Promise<void> {

@@ -188,7 +188,11 @@ async function summarize(ctx: Context, client: QfClient, result: FollowResult): 
     if (usage) parts.push(`context ${count(usage.used)}/${count(usage.size)} tokens`);
     ctx.print(parts.join(s.dim(" · ")));
     if (view?.job.branch)
-      ctx.print(s.dim(`  Branch ${view.job.branch} · review the changes with \`qf diff ${id}\``));
+      ctx.print(
+        s.dim(
+          `  Branch ${view.job.branch} · review with \`qf diff ${id}\`, then \`qf merge ${id}\``,
+        ),
+      );
     else if (view?.job.workspace === "folder" && view.job.workspacePath) {
       ctx.print(s.dim(`  Files are in ${view.job.workspacePath}`));
     }
@@ -657,6 +661,70 @@ const COMMANDS: Record<string, Command> = {
             .join("\n")
         : result.diff;
       ctx.io.out(colored.endsWith("\n") ? colored : `${colored}\n`);
+      return 0;
+    },
+  },
+
+  merge: {
+    group: "Jobs",
+    usage: "merge <job> [--squash] [-m <message>]",
+    summary:
+      "Commit a finished job's work and merge its branch into the branch you have checked out",
+    options: { squash: { type: "boolean" }, message: { type: "string", short: "m" } },
+    async run(ctx) {
+      const ref = need(ctx, 0, "the job id", this.usage);
+      const { client } = await ctx.connect();
+      const view = await resolveJob(client, ref);
+      const message = str(ctx.values, "message");
+      try {
+        const result = await client.merge(view.job.id, {
+          strategy: ctx.values.squash ? "squash" : "merge",
+          ...(message ? { message } : {}),
+        });
+        if (ctx.values.json) {
+          ctx.json(result);
+          return 0;
+        }
+        const how = result.strategy === "squash" ? "Squashed" : "Merged";
+        ctx.print(
+          `${ctx.style.green("✓")} ${how} ${view.job.branch} into ${ctx.style.bold(result.into)} as ${result.commit.slice(0, 10)}.`,
+        );
+        ctx.print(
+          ctx.style.dim(`  Remove the worktree and branch with \`qf discard ${view.job.id}\`.`),
+        );
+        return 0;
+      } catch (error) {
+        const details =
+          error instanceof QfApiError
+            ? (error.body as { details?: { conflicts?: string[]; files?: string[] } } | undefined)
+                ?.details
+            : undefined;
+        const files = details?.conflicts ?? details?.files;
+        if (files?.length) {
+          throw new CliError(
+            (error as Error).message,
+            files
+              .slice(0, 20)
+              .map((f) => `  ${f}`)
+              .join("\n") + (files.length > 20 ? `\n  … ${files.length - 20} more` : ""),
+          );
+        }
+        throw error;
+      }
+    },
+  },
+
+  discard: {
+    group: "Jobs",
+    usage: "discard <job>",
+    summary: "Delete a stopped job's worktree and branch, or its folder",
+    async run(ctx) {
+      const ref = need(ctx, 0, "the job id", this.usage);
+      const { client } = await ctx.connect();
+      const view = await resolveJob(client, ref);
+      await client.discard(view.job.id);
+      const what = view.job.branch ? `worktree and branch ${view.job.branch}` : "folder";
+      ctx.print(`Discarded the ${what} of ${view.job.id}.`);
       return 0;
     },
   },
