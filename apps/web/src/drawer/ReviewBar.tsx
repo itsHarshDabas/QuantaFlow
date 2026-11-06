@@ -1,7 +1,8 @@
 import type { JobView } from "@quantaflow/core";
 import { Check, GitMerge, Trash2 } from "lucide-react";
 import { useId, useState } from "react";
-import { Button, cx } from "../components/ui";
+import { Button, cx, inlineCode } from "../components/ui";
+import { api } from "../lib/backend";
 import { errorMessage } from "../lib/errors";
 import {
   canDiscard,
@@ -9,23 +10,26 @@ import {
   type MergeRefusal,
   type MergeStrategy,
   refusalOf,
-  review,
   stopped,
   workspaceState,
 } from "../lib/review";
 import { useQf } from "../store/store";
 
+const FILES_INTRO: Partial<Record<NonNullable<MergeRefusal["reason"]>, string>> = {
+  conflict: "The merge was aborted and the project is unchanged. These files conflict:",
+  dirty: "These files have uncommitted changes in the project:",
+};
+
 function Refusal({ refusal }: { refusal: MergeRefusal }) {
+  const intro = refusal.reason ? FILES_INTRO[refusal.reason] : undefined;
   return (
     <div className="rounded-md border border-stop/40 bg-stop-soft px-3 py-2 text-xs" role="alert">
-      <p className="font-medium text-ink">{refusal.reason}</p>
-      {refusal.conflicts && refusal.conflicts.length > 0 && (
+      <p className="font-medium text-ink">{inlineCode(refusal.message)}</p>
+      {refusal.files && (
         <>
-          <p className="mt-1.5 text-ink-muted">
-            The merge was aborted and the project is unchanged. These files conflict:
-          </p>
-          <ul className="mt-1 space-y-0.5 font-mono text-ink">
-            {refusal.conflicts.map((path) => (
+          <p className="mt-1.5 text-ink-muted">{intro ?? "Files involved:"}</p>
+          <ul className="mt-1 max-h-32 space-y-0.5 overflow-y-auto font-mono text-ink">
+            {refusal.files.map((path) => (
               <li key={path} className="truncate" title={path}>
                 {path}
               </li>
@@ -60,7 +64,7 @@ function DiscardButton({ view, label }: { view: JobView; label: string }) {
         onClick={async () => {
           setBusy(true);
           try {
-            await review().discard(view.job.id);
+            await api().discard(view.job.id);
             setConfirming(false);
             setError(null);
           } catch (err) {
@@ -98,7 +102,7 @@ function MergeControls({ view }: { view: JobView }) {
     setError(null);
     try {
       const text = message.trim();
-      await review().merge(view.job.id, { strategy, ...(text ? { message: text } : {}) });
+      await api().merge(view.job.id, { strategy, ...(text ? { message: text } : {}) });
     } catch (err) {
       const refused = refusalOf(err);
       if (refused) setRefusal(refused);

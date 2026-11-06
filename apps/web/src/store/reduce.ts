@@ -38,11 +38,6 @@ export interface MergeInfo {
   ts: number;
 }
 
-/** Workspace events from M3. Typed here until core's event union includes them. */
-type WorkspaceEvent =
-  | { type: "workspace.merged"; commit: string; into: string; strategy: string }
-  | { type: "workspace.discarded" };
-
 /** Everything the UI knows about the daemon, folded from the snapshot and the live stream. */
 export interface LiveData {
   version: string;
@@ -138,27 +133,16 @@ export function applyEvents(data: LiveData, events: readonly QfEvent[]): LiveDat
     }
     lastEvent[event.jobId] = event;
 
-    const workspace = event as unknown as WorkspaceEvent;
-    if (workspace.type === "workspace.merged" || workspace.type === "workspace.discarded") {
-      const view = jobs[event.jobId];
-      const state = workspace.type === "workspace.merged" ? "merged" : "discarded";
-      if (view) {
-        jobs[event.jobId] = {
-          ...view,
-          job: { ...view.job, workspaceState: state, updatedAt: event.ts } as typeof view.job,
-        };
-      }
-      if (workspace.type === "workspace.merged") {
-        merges = {
-          ...merges,
-          [event.jobId]: {
-            commit: workspace.commit,
-            into: workspace.into,
-            strategy: workspace.strategy,
-            ts: event.ts,
-          },
-        };
-      }
+    if (event.type === "workspace.merged") {
+      merges = {
+        ...merges,
+        [event.jobId]: {
+          commit: event.commit,
+          into: event.into,
+          strategy: event.strategy,
+          ts: event.ts,
+        },
+      };
     }
 
     const log = logs[event.jobId];

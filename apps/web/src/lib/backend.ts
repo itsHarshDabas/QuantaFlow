@@ -1,5 +1,4 @@
 import type { QfClient } from "@quantaflow/core";
-import type { ReviewMethods } from "./review";
 
 /**
  * The part of the daemon API the UI uses. `QfClient` from core is the real one; the demo
@@ -18,8 +17,9 @@ export type Backend = Pick<
   | "diff"
   | "decide"
   | "subscribe"
-> &
-  Partial<ReviewMethods>;
+  | "merge"
+  | "discard"
+>;
 
 let current: Backend | undefined;
 

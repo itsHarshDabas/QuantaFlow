@@ -6,6 +6,8 @@ import {
   type DiffResult,
   foldJob,
   type Job,
+  type MergeInput,
+  type MergeResult,
   type PendingApproval,
   QfApiError,
   type QfEvent,
@@ -18,7 +20,7 @@ import {
 } from "@quantaflow/core";
 import type { Backend } from "../lib/backend";
 import { parseUnifiedDiff } from "../lib/diff";
-import type { MergeResult, MergeStrategy, WorkspaceState } from "../lib/review";
+import type { WorkspaceState } from "../lib/review";
 import {
   DEMO_AGENTS,
   DEMO_HARNESSES,
@@ -81,10 +83,7 @@ export class DemoBackend implements Backend {
       root: ROOT,
       agents: structuredClone(this.agentList),
       harnesses: structuredClone(DEMO_HARNESSES),
-      jobs: [...this.sims.values()].map((sim) => {
-        const view = foldJob(sim.job, sim.events);
-        return { ...view, job: { ...view.job, workspaceState: sim.workspaceState } };
-      }),
+      jobs: [...this.sims.values()].map((sim) => foldJob(sim.job, sim.events)),
       approvals: [...this.pending.values()],
       lastSeq: this.seq,
     };
@@ -186,36 +185,42 @@ export class DemoBackend implements Backend {
     return { ok: true };
   }
 
-  async merge(jobId: string, body: { strategy: MergeStrategy }): Promise<MergeResult> {
+  async merge(jobId: string, input: MergeInput = {}): Promise<MergeResult> {
+    const strategy = input.strategy ?? "merge";
     const sim = this.require(jobId);
     if (sim.job.workspace !== "worktree") {
       throw new QfApiError(400, "Only jobs with their own git worktree can be merged.");
     }
-    const refuse = (reason: string, conflicts?: string[]) => {
-      throw new QfApiError(409, reason, { reason, ...(conflicts ? { conflicts } : {}) });
+    // Same 409 shape as the daemon: { error, details: { reason, conflicts? } }.
+    const refuse = (error: string, details: Record<string, unknown>) => {
+      throw new QfApiError(409, error, { error, details });
     };
-    if (sim.workspaceState !== "active")
-      refuse(`This job's workspace was already ${sim.workspaceState}.`);
-    if (!STOPPABLE.has(sim.status))
-      refuse("The job is still running. Wait for it to stop, or cancel it.");
+    if (sim.workspaceState !== "active") {
+      refuse(`The job's workspace was already ${sim.workspaceState}.`, { reason: "discarded" });
+    }
+    if (!STOPPABLE.has(sim.status)) {
+      refuse("The job is still running. Wait for it to stop, or cancel it.", { reason: "running" });
+    }
     const paths = parseUnifiedDiff(sim.diff ?? "").map((file) => file.path);
-    if (paths.length === 0) refuse("The job's branch has no changes to merge.");
+    if (paths.length === 0) {
+      refuse(`There is nothing to merge: ${sim.job.branch} has no changes beyond main.`, {
+        reason: "empty",
+      });
+    }
     const conflicts = paths.filter((path) => this.mergedPaths.has(path));
     if (conflicts.length > 0) {
-      refuse("The merge has conflicts with work already merged into main.", conflicts);
+      refuse("The merge conflicts with main, so it was aborted.", {
+        reason: "conflict",
+        conflicts,
+      });
     }
     for (const path of paths) this.mergedPaths.add(path);
     const commit = Array.from({ length: 40 }, () =>
       Math.floor(Math.random() * 16).toString(16),
     ).join("");
     sim.workspaceState = "merged";
-    this.emit(sim, {
-      type: "workspace.merged",
-      commit,
-      into: "main",
-      strategy: body.strategy,
-    } as unknown as QfEventData);
-    return { commit, into: "main" };
+    this.emit(sim, { type: "workspace.merged", commit, into: "main", strategy });
+    return { commit, into: "main", strategy };
   }
 
   async discard(jobId: string): Promise<{ ok: true }> {
@@ -227,11 +232,14 @@ export class DemoBackend implements Backend {
       );
     }
     if (!STOPPABLE.has(sim.status)) {
-      throw new QfApiError(409, "The job is still running. Cancel it first.");
+      throw new QfApiError(409, "The job is still running. Cancel it first.", {
+        error: "The job is still running. Cancel it first.",
+        details: { reason: "running" },
+      });
     }
     sim.workspaceState = "discarded";
     sim.diff = null;
-    this.emit(sim, { type: "workspace.discarded" } as unknown as QfEventData);
+    this.emit(sim, { type: "workspace.discarded" });
     return { ok: true };
   }
 
