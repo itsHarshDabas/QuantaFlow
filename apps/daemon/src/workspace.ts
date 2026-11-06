@@ -202,7 +202,9 @@ export class WorkspaceManager {
         reason: "empty",
       });
 
-    const text = message ?? `Merge QuantaFlow job ${job.id}: ${title}`;
+    const text =
+      message ??
+      (strategy === "squash" ? `${title} (QuantaFlow ${job.id})` : `Merge ${job.branch}: ${title}`);
     const rootIdentity = await commitIdentity(this.root);
     const merged =
       strategy === "squash"
