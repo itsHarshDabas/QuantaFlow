@@ -202,3 +202,76 @@ export function foldContext(lines: readonly DiffLine[], context = 2): FoldedLine
   if (run.length > 0) flush(true);
   return out;
 }
+
+/** A piece of a changed line; `changed` marks the part that differs from its pair. */
+export interface Segment {
+  text: string;
+  changed: boolean;
+}
+
+const WORD = /\w+|\s+|[^\w\s]/g;
+
+function tokens(text: string): string[] {
+  return text.match(WORD) ?? [];
+}
+
+/**
+ * Splits a removed line and the line that replaced it into unchanged and changed parts, by
+ * trimming the tokens they share at both ends. Returns null when the lines share too little
+ * for highlighting to help, so a rewritten line reads as plain red and green.
+ */
+export function inlineChanges(
+  before: string,
+  after: string,
+): { before: Segment[]; after: Segment[] } | null {
+  const a = tokens(before);
+  const b = tokens(after);
+  let start = 0;
+  while (start < a.length && start < b.length && a[start] === b[start]) start++;
+  let endA = a.length;
+  let endB = b.length;
+  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
+    endA--;
+    endB--;
+  }
+  const shared = a.slice(0, start).join("").length + a.slice(endA).join("").length;
+  const longest = Math.max(before.length, after.length);
+  if (longest === 0 || shared / longest < 0.4) return null;
+  const split = (parts: string[], end: number): Segment[] =>
+    [
+      { text: parts.slice(0, start).join(""), changed: false },
+      { text: parts.slice(start, end).join(""), changed: true },
+      { text: parts.slice(end).join(""), changed: false },
+    ].filter((s) => s.text.length > 0);
+  return { before: split(a, endA), after: split(b, endB) };
+}
+
+/**
+ * Pairs each run of removed lines with the added lines right after it, line by line, and
+ * returns the word-level segments for every line that has a close enough pair, by index.
+ */
+export function pairInlineChanges(lines: readonly DiffLine[]): Map<number, Segment[]> {
+  const out = new Map<number, Segment[]>();
+  let i = 0;
+  while (i < lines.length) {
+    if (lines[i]?.type !== "del") {
+      i++;
+      continue;
+    }
+    const delStart = i;
+    while (lines[i]?.type === "del") i++;
+    const addStart = i;
+    while (lines[i]?.type === "add") i++;
+    const pairs = Math.min(addStart - delStart, i - addStart);
+    for (let k = 0; k < pairs; k++) {
+      const del = lines[delStart + k];
+      const add = lines[addStart + k];
+      if (!del || !add) continue;
+      const result = inlineChanges(del.text, add.text);
+      if (!result) continue;
+      out.set(delStart + k, result.before);
+      out.set(addStart + k, result.after);
+    }
+  }
+  return out;
+}
