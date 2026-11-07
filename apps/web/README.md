@@ -42,6 +42,12 @@ real client, so every view works offline.
 The approvals queue is always on the left (a sheet on narrow screens). `?job=<id>` opens a job's
 drawer: chat with follow-ups, diff, raw events and logs.
 
+The Diff tab is where a finished job's work is reviewed. Each file can be collapsed and marked
+as viewed (a viewed file folds away and is unmarked if it changes again), changed words are
+highlighted within a line, and the review bar merges the job's branch into the project (squash
+or merge commit) or discards its worktree or folder. A refused merge shows the reason and any
+conflicting files; the project is left unchanged.
+
 Keys: `n` new job, `1`–`4` views, `Esc` closes. In the queue, focus a request and press `a`
 allow, `Shift+A` always allow, `d` deny.
 

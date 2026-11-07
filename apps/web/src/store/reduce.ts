@@ -30,6 +30,14 @@ export interface JobLog {
   error?: string;
 }
 
+/** How a job's branch was merged, from its `workspace.merged` event. */
+export interface MergeInfo {
+  commit: string;
+  into: string;
+  strategy: string;
+  ts: number;
+}
+
 /** Everything the UI knows about the daemon, folded from the snapshot and the live stream. */
 export interface LiveData {
   version: string;
@@ -43,6 +51,8 @@ export interface LiveData {
   /** The previous event of each job, so streamed message chunks join up. */
   lastEvent: Record<string, QfEvent>;
   logs: Record<string, JobLog>;
+  /** Merge details seen on the stream since the page loaded, by job. */
+  merges: Record<string, MergeInfo>;
 }
 
 export const MAX_DECISIONS = 40;
@@ -58,6 +68,7 @@ export const emptyLiveData: LiveData = {
   lastSeq: 0,
   lastEvent: {},
   logs: {},
+  merges: {},
 };
 
 /** Replaces the daemon state with a fresh snapshot. Decisions and open logs survive a reconnect. */
@@ -106,6 +117,7 @@ export function applyEvents(data: LiveData, events: readonly QfEvent[]): LiveDat
   const approvals = { ...data.approvals };
   const lastEvent = { ...data.lastEvent };
   const logs = { ...data.logs };
+  let merges = data.merges;
   const decided: Decision[] = [];
   let lastSeq = data.lastSeq;
 
@@ -120,6 +132,18 @@ export function applyEvents(data: LiveData, events: readonly QfEvent[]): LiveDat
       jobs[event.jobId] = applyEvent(current, event, lastEvent[event.jobId]);
     }
     lastEvent[event.jobId] = event;
+
+    if (event.type === "workspace.merged") {
+      merges = {
+        ...merges,
+        [event.jobId]: {
+          commit: event.commit,
+          into: event.into,
+          strategy: event.strategy,
+          ts: event.ts,
+        },
+      };
+    }
 
     const log = logs[event.jobId];
     if (log) logs[event.jobId] = appendToLog(log, event);
@@ -160,7 +184,7 @@ export function applyEvents(data: LiveData, events: readonly QfEvent[]): LiveDat
       ? [...decided.reverse(), ...data.decisions].slice(0, MAX_DECISIONS)
       : data.decisions;
 
-  return { ...data, jobs, approvals, lastEvent, logs, decisions, lastSeq };
+  return { ...data, jobs, approvals, lastEvent, logs, decisions, merges, lastSeq };
 }
 
 /** Adds fetched history to a job's log, keeping any live events that arrived meanwhile. */
