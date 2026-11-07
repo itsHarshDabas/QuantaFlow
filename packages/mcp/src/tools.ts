@@ -88,7 +88,7 @@ const descriptions: Record<ToolName, string> = {
   get_job:
     "Get a job's status, its latest reply, the files it changed and whether it is waiting on a person's approval.",
   wait_for_jobs:
-    "Wait until every listed job has finished its turn (done, failed or cancelled), or until one is waiting on a person's approval, or until the timeout. Returns each job's status and latest reply.",
+    "Wait until every listed job has finished its turn (done, failed or cancelled), or until one starts waiting on a person's approval, or until the timeout. Calling it again keeps waiting through approvals already reported. Returns each job's status and latest reply.",
   send_message:
     "Send a follow-up to a worker job, for example to ask for a fix. It reopens a finished job in the same workspace.",
   cancel_job: "Stop a worker job.",
@@ -165,6 +165,8 @@ interface JobSummary {
 export class OrchestratorTools {
   private readonly runId: string;
   private readonly pollMs: number;
+  /** Jobs whose wait for approval wait_for_jobs already reported. */
+  private readonly reportedWaiting = new Set<string>();
 
   constructor(private readonly ctx: OrchestratorContext) {
     this.runId = ctx.runId || ctx.parentJobId;
@@ -277,8 +279,16 @@ export class OrchestratorTools {
     for (;;) {
       views = await Promise.all(ids.map((id) => this.ctx.client.job(id)));
       const settled = views.every((v) => SETTLED.has(v.job.status));
-      const blocked = views.some((v) => v.job.status === "needs_input");
-      if (settled || blocked) break;
+      for (const v of views) {
+        if (v.job.status !== "needs_input") this.reportedWaiting.delete(v.job.id);
+      }
+      // Return once when a job starts waiting on a person, not on every call while it waits,
+      // so calling again really waits instead of returning at once.
+      const newlyBlocked = views.filter(
+        (v) => v.job.status === "needs_input" && !this.reportedWaiting.has(v.job.id),
+      );
+      for (const v of newlyBlocked) this.reportedWaiting.add(v.job.id);
+      if (settled || newlyBlocked.length) break;
       if (Date.now() >= deadline) {
         timedOut = true;
         break;
@@ -290,7 +300,7 @@ export class OrchestratorTools {
     const head = timedOut
       ? "Timed out. Some jobs are still running; call wait_for_jobs again to keep waiting."
       : waiting.length
-        ? `${waiting.join(", ")} ${waiting.length === 1 ? "is" : "are"} waiting for a person to approve a step. They continue once it is decided.`
+        ? `${waiting.join(", ")} ${waiting.length === 1 ? "is" : "are"} waiting for a person to approve a step. Call wait_for_jobs again to wait until it is decided and the jobs finish.`
         : "All jobs have finished their turn.";
     return {
       text: [head, ...summaries.map(describe)].join("\n\n"),

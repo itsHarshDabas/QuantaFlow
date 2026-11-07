@@ -200,6 +200,15 @@ describe("OrchestratorTools", () => {
     expect(blocked.data.waitingForApproval).toEqual(["job_w2"]);
     expect(blocked.text).toContain("job_w2 is waiting for a person");
 
+    // The same wait isn't reported twice: the next call waits for it to be decided.
+    setTimeout(() => {
+      d.jobs.set("job_w1", { ...(d.jobs.get("job_w1") as Job), status: "done" });
+      d.jobs.set("job_w2", { ...(d.jobs.get("job_w2") as Job), status: "done" });
+    }, 30);
+    const after = await tools.call("wait_for_jobs", { jobIds: ["job_w1", "job_w2"] });
+    expect(after.text).toContain("All jobs have finished their turn.");
+
+    d.jobs.set("job_w1", { ...(d.jobs.get("job_w1") as Job), status: "working" });
     const timedOut = await tools.call("wait_for_jobs", { jobIds: ["job_w1"], timeoutSeconds: 1 });
     expect(timedOut.data.timedOut).toBe(true);
   });

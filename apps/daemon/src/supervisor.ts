@@ -118,10 +118,17 @@ export function composePrompt(
   return parts.join("\n\n");
 }
 
+/** Read through a function so TypeScript doesn't narrow it across awaits. */
+function cancelOf(live: LiveJob): LiveJob["cancel"] {
+  return live.cancel;
+}
+
 /** Runs jobs: queues them, starts harness sessions, routes permissions and tracks state. */
 export class Supervisor {
   private readonly live = new Map<string, LiveJob>();
   private readonly queue: string[] = [];
+  /** Sessions being started. Shutdown waits for them, so none writes after the store closes. */
+  private readonly starting = new Set<Promise<void>>();
   private stopping = false;
 
   constructor(private readonly o: SupervisorOptions) {}
@@ -224,7 +231,7 @@ export class Supervisor {
       void this.runTurn(live, text, text);
       return;
     }
-    void this.start(jobId, { text, restarted: job.workspacePath !== null });
+    this.launch(jobId, { text, restarted: job.workspacePath !== null });
   }
 
   /** A job's workspace can be merged or discarded only while nothing runs in it. */
@@ -303,16 +310,27 @@ export class Supervisor {
   async shutdown(): Promise<void> {
     this.stopping = true;
     this.queue.length = 0;
-    await Promise.all(
-      [...this.live.values()].map(async (live) => {
-        if (live.busy) {
-          live.cancel = { reason: "The QuantaFlow daemon stopped", state: "failed" };
-          this.o.approvals.cancelForJob(live.jobId, "The QuantaFlow daemon stopped");
-          this.setState(live.jobId, "failed", "Interrupted because the QuantaFlow daemon stopped");
-        }
-        await this.close(live);
-      }),
-    );
+    for (const live of this.live.values()) {
+      if (live.busy) {
+        live.cancel = { reason: "The QuantaFlow daemon stopped", state: "failed" };
+        this.o.approvals.cancelForJob(live.jobId, "The QuantaFlow daemon stopped");
+        this.setState(live.jobId, "failed", "Interrupted because the QuantaFlow daemon stopped");
+      } else if (!live.session) {
+        // Still starting: start() sees the cancel, stops the session and records the failure.
+        live.cancel = {
+          reason: "Interrupted because the QuantaFlow daemon stopped",
+          state: "failed",
+        };
+      }
+    }
+    await Promise.allSettled([...this.starting]);
+    await Promise.all([...this.live.values()].map((live) => this.close(live)));
+  }
+
+  /** Starts a session in the background, tracked for shutdown. */
+  private launch(jobId: string, followUp: { text: string; restarted: boolean } | null): void {
+    const run = this.start(jobId, followUp).finally(() => this.starting.delete(run));
+    this.starting.add(run);
   }
 
   /** The agent's MCP servers, plus QuantaFlow's own for an orchestrator. */
@@ -351,7 +369,7 @@ export class Supervisor {
         continue;
       }
       this.queue.splice(i, 1);
-      if (gate === "ready") void this.start(jobId, null);
+      if (gate === "ready") this.launch(jobId, null);
       else this.setState(jobId, "failed", gate.reason);
     }
   }
@@ -453,6 +471,12 @@ export class Supervisor {
         });
       }
 
+      // Cancelled (or the daemon stopped) while the workspace was being prepared.
+      const early = cancelOf(live);
+      if (early) {
+        await this.finish(live, early.state, early.reason);
+        return;
+      }
       const spec = this.o.registry.get(job.harness);
       if (!spec) throw new Error(`Unknown harness "${job.harness}"`);
       live.session = await startAcpSession({

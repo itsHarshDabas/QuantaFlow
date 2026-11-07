@@ -476,6 +476,28 @@ describe("orchestrator", () => {
     expect(failed).toHaveLength(0);
   });
 
+  it("keeps waiting while a worker waits for approval", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const lead = await client.createJob({
+      agentId: "builder",
+      prompt: "orchestrate a summary",
+      role: "orchestrator",
+    });
+    const writeUp = await waitFor(
+      async () => (await client.approvals()).find((a) => a.kind === "edit" && a.jobId !== lead.id),
+      "the worker's edit approval",
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect((await client.job(lead.id)).job.status).toBe("working");
+    await client.decide(writeUp.id, "allow");
+    const done = await waitForStatus(lead.id, "done");
+    expect(done.lastMessage).toContain("All done.");
+    const { events } = await client.events(lead.id);
+    const text = events.map((e) => (e.type === "message" ? e.text : "")).join("");
+    expect(text).toContain("Both workers finished.");
+  });
+
   it("doesn't give workers the tools", async () => {
     await boot();
     await client.createAgent(agent());
