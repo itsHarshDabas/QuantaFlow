@@ -32,6 +32,7 @@ export function NewJobDialog() {
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
   const [workspace, setWorkspace] = useState<WorkspaceMode | "">("");
+  const [orchestrate, setOrchestrate] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -42,6 +43,7 @@ export function NewJobDialog() {
         preset ?? (agents.some((a) => a.id === current) ? current : (agents[0]?.id ?? "")),
     );
     setWorkspace("");
+    setOrchestrate(false);
     setError(null);
   }, [open, preset, agents]);
 
@@ -58,6 +60,7 @@ export function NewJobDialog() {
         prompt: prompt.trim(),
         ...(title.trim() ? { title: title.trim() } : {}),
         ...(workspace ? { workspace } : {}),
+        ...(orchestrate ? { role: "orchestrator" as const } : {}),
       });
       setPrompt("");
       setTitle("");
@@ -185,6 +188,26 @@ export function NewJobDialog() {
           <p className="-mt-2 text-xs text-ink-muted">
             {WORKSPACE_TEXT[workspace || agent?.workspace || "worktree"].help}
           </p>
+
+          <div className="flex items-start gap-2.5 rounded-md border border-line px-3 py-2.5">
+            <input
+              id={`${ids}-orchestrate`}
+              type="checkbox"
+              checked={orchestrate}
+              onChange={(event) => setOrchestrate(event.target.checked)}
+              aria-describedby={`${ids}-orchestrate-help`}
+              className="mt-1 accent-ink"
+            />
+            <div className="text-sm">
+              <label htmlFor={`${ids}-orchestrate`} className="cursor-pointer font-medium">
+                Run as orchestrator
+              </label>
+              <p id={`${ids}-orchestrate-help`} className="mt-0.5 text-xs text-ink-muted">
+                The agent plans the work and starts other agents' jobs for it. Their approvals still
+                come to you, and the whole run shows in Flow.
+              </p>
+            </div>
+          </div>
 
           {error && (
             <p className="text-sm text-stop" role="alert">
