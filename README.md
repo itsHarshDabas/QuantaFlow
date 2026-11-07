@@ -2,7 +2,7 @@
 
 A local control room for AI agents. Define an agent once (its role, harness, model and permissions), hand it jobs, and run many agents in parallel across Claude Code, Codex, OpenCode, Gemini CLI and Kilo Code. Each job gets its own workspace, every risky action goes through one approvals inbox, and you watch it all live.
 
-> **Status: early development.** Milestone M1 is the backend: the ACP driver for every harness, the `quantaflowd` daemon and the `qf` CLI with approvals in the terminal. The web UI is being built for M2. Nothing is published to npm yet, so run it from source. See the [roadmap](#roadmap).
+> **Status: early development.** M1 (the ACP driver for every harness, the `quantaflowd` daemon and the `qf` CLI) and M2 (the web UI) are done. Nothing is published to npm yet, so run it from source. See the [roadmap](#roadmap).
 
 ## Quick start
 
@@ -163,7 +163,7 @@ Everything an agent does becomes an event in an append-only log. Every view is a
 
 1. **M0: Scaffold.** Monorepo, CI, core event model, policy engine, demo agent. (Done.)
 2. **M1: One agent end to end.** ACP driver, daemon, SQLite event store, approvals in the `qf` CLI. (Done.)
-3. **M2: Table view and approvals.** Web UI with a live table, an agent drawer and the approvals inbox.
+3. **M2: Table view and approvals.** Web UI with a live table, an agent drawer and the approvals inbox. (Done, with early Flow and Orbit views.)
 4. **M3: Many harnesses, isolated.** All five harnesses verified, a terminal fallback for anything without ACP, diff review and merge.
 5. **M4: Orchestrator.** An orchestrator agent (Claude Code by default, configurable) that plans jobs and steers other agents through MCP tools, plus the live Flow view.
 6. **M5: Workflows and Orbit.** Reusable workflow YAML with fan-out and human gates, and the Orbit view.

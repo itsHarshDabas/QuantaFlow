@@ -217,7 +217,8 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
   });
 
   if (deps.webDist && existsSync(path.join(deps.webDist, "index.html"))) {
-    await app.register(fastifyStatic, { root: deps.webDist, wildcard: false, index: false });
+    // wildcard: true looks files up per request, so rebuilding the UI while the daemon runs works.
+    await app.register(fastifyStatic, { root: deps.webDist, wildcard: true, index: false });
     const sendIndex = (_request: FastifyRequest, reply: FastifyReply) => {
       const host = _request.headers.host ?? "";
       reply.header(
@@ -228,7 +229,11 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     };
     app.get("/", sendIndex);
     app.setNotFoundHandler((request, reply) => {
-      if (request.method === "GET" && !request.url.startsWith("/api/")) {
+      // Client-side routes get the app. A missing asset or any path with a file extension gets a
+      // real 404, because answering a script or stylesheet request with HTML leaves a blank page.
+      const pathname = request.url.split("?")[0] ?? "";
+      const isAsset = pathname.startsWith("/assets/") || /\.[a-z0-9]+$/i.test(pathname);
+      if (request.method === "GET" && !pathname.startsWith("/api/") && !isAsset) {
         return sendIndex(request, reply);
       }
       return reply.code(404).send({ error: "Not found" });
