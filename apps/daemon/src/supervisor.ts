@@ -4,6 +4,7 @@ import {
   canTransition,
   evaluatePolicy,
   type Job,
+  type McpServerConfig,
   MergeInput,
   type MergeResult,
   newId,
@@ -27,6 +28,10 @@ import type { Store } from "./store.js";
 import type { PreparedWorkspace, WorkspaceManager } from "./workspace.js";
 
 const FLUSH_MS = 50;
+/** Most worker jobs one orchestrator may start, so a confused model can't flood the queue. */
+export const MAX_CHILD_JOBS = 20;
+/** The MCP server name QuantaFlow uses for its own orchestrator tools. */
+export const ORCHESTRATOR_MCP_NAME = "quantaflow";
 const MAX_BUFFERED_CHARS = 4_000;
 const CANCEL_GRACE_MS = 5_000;
 
@@ -39,6 +44,8 @@ interface MessageBuffer {
 interface LiveJob {
   jobId: string;
   agent: AgentProfile;
+  /** Orchestrators mostly wait on their workers, so they don't take a concurrency slot. */
+  orchestrator: boolean;
   session: DriverSession | null;
   busy: boolean;
   cancel: { reason: string; state: SessionState } | null;
@@ -60,6 +67,8 @@ export interface SupervisorOptions {
   maxConcurrent: number;
   idleMinutes: number;
   version: string;
+  /** The MCP server that gives an orchestrator job its tools. Without it, orchestrators get none. */
+  orchestratorMcp?: (job: Job) => McpServerConfig | null;
 }
 
 function titleFrom(prompt: string): string {
@@ -77,8 +86,14 @@ export function composePrompt(
   text: string,
   workspace: Pick<PreparedWorkspace, "mode" | "branch" | "portBase">,
   restarted: boolean,
+  role: Job["role"] = "worker",
 ): string {
   const context: string[] = [];
+  if (role === "orchestrator") {
+    context.push(
+      `You are the orchestrator for this run. Use the ${ORCHESTRATOR_MCP_NAME} MCP tools to split the work across worker agents: list_agents, create_job, wait_for_jobs, get_job, send_message and cancel_job. Each worker gets its own workspace and sees only the prompt you give it. Combine their results into one answer. You can start up to ${MAX_CHILD_JOBS} workers.`,
+    );
+  }
   if (workspace.mode === "worktree" && workspace.branch) {
     context.push(
       `You are working in an isolated git worktree on branch ${workspace.branch}, separate from the main checkout.`,
@@ -140,12 +155,33 @@ export class Supervisor {
       if (!this.o.store.getJob(dep)) throw badRequest(`Dependency "${dep}" does not exist`);
     }
     const parentJobId = parsed.data.parentJobId ?? null;
-    if (parentJobId && !this.o.store.getJob(parentJobId)) {
-      throw badRequest(`Parent job "${parentJobId}" does not exist`);
+    const role = parsed.data.role ?? "worker";
+    let runId = parsed.data.runId ?? null;
+    if (parentJobId) {
+      const parent = this.o.store.getJob(parentJobId);
+      if (!parent) throw badRequest(`Parent job "${parentJobId}" does not exist`);
+      if (parent.role !== "orchestrator") {
+        throw badRequest(`Parent job "${parentJobId}" is not an orchestrator`);
+      }
+      if (role === "orchestrator") {
+        throw badRequest("An orchestrator can't start another orchestrator");
+      }
+      if (TERMINAL_STATES.has(parent.status) && parent.status !== "done") {
+        throw conflict(`Parent job "${parentJobId}" has ${parent.status}`);
+      }
+      const children = this.o.store
+        .listJobs(10_000)
+        .filter((j) => j.parentJobId === parentJobId).length;
+      if (children >= MAX_CHILD_JOBS) {
+        throw conflict(`An orchestrator can start at most ${MAX_CHILD_JOBS} jobs`);
+      }
+      runId = parent.runId ?? parent.id;
     }
+    const id = newId("job");
+    if (role === "orchestrator" && !runId) runId = id;
     const now = Date.now();
     const job: Job = {
-      id: newId("job"),
+      id,
       title: parsed.data.title?.trim() || titleFrom(parsed.data.prompt),
       prompt: parsed.data.prompt,
       agentId: agent.id,
@@ -159,10 +195,10 @@ export class Supervisor {
       error: null,
       createdAt: now,
       updatedAt: now,
-      runId: parsed.data.runId ?? null,
+      runId,
       parentJobId,
       dependsOn,
-      role: parsed.data.role ?? "worker",
+      role,
       workspaceState: "active",
     };
     this.o.store.saveJob(job);
@@ -279,9 +315,27 @@ export class Supervisor {
     );
   }
 
+  /** The agent's MCP servers, plus QuantaFlow's own for an orchestrator. */
+  private mcpServersFor(job: Job, agent: AgentProfile): McpServerConfig[] {
+    if (job.role !== "orchestrator") return agent.mcpServers;
+    const own = this.o.orchestratorMcp?.(job);
+    if (!own) {
+      this.o.log.append(job.id, {
+        type: "notice",
+        severity: "warning",
+        title: "Orchestrator tools are unavailable",
+        description: "The QuantaFlow MCP server is not built, so this job can't start workers.",
+      });
+      return agent.mcpServers;
+    }
+    return [...agent.mcpServers.filter((s) => s.name !== own.name), own];
+  }
+
   private activeCount(): number {
     let count = 0;
-    for (const live of this.live.values()) if (live.busy || !live.session) count += 1;
+    for (const live of this.live.values()) {
+      if (!live.orchestrator && (live.busy || !live.session)) count += 1;
+    }
     return count;
   }
 
@@ -351,9 +405,11 @@ export class Supervisor {
       this.setState(jobId, "failed", `Agent "${job.agentId}" no longer exists`);
       return;
     }
+    const orchestrator = job.role === "orchestrator";
     const live: LiveJob = {
       jobId,
       agent,
+      orchestrator,
       session: null,
       busy: false,
       cancel: null,
@@ -409,7 +465,7 @@ export class Supervisor {
           PORT: String(workspace.portBase),
         },
         ...(agent.model ? { model: agent.model } : {}),
-        mcpServers: agent.mcpServers,
+        mcpServers: this.mcpServersFor(job, agent),
         clientVersion: this.o.version,
         onEvent: (event) => this.onDriverEvent(live, event),
         onPermission: (ask, signal) => this.onPermission(live, ask, signal),
@@ -431,7 +487,7 @@ export class Supervisor {
       const text = followUp?.text ?? job.prompt;
       await this.runTurn(
         live,
-        composePrompt(agent, text, workspace, followUp?.restarted ?? false),
+        composePrompt(agent, text, workspace, followUp?.restarted ?? false, job.role),
         text,
       );
     } catch (error) {

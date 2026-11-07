@@ -11,6 +11,8 @@
  * - "readonly": skips the file edit.
  * - "fail": the turn fails with an error.
  * - "slow": every step takes four times longer.
+ * - "orchestrate": acts as an orchestrator. It uses the QuantaFlow MCP tools to start two
+ *   worker jobs, waits for them and reports back. Add "readonly" to keep the workers read-only.
  *
  * Set QF_FAKE_DELAY_MS to change the pause between steps (default 120, 0 in tests).
  */
@@ -19,9 +21,11 @@ import { readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { Readable, Writable } from "node:stream";
 import * as acp from "@agentclientprotocol/sdk";
+import { orchestrate } from "./orchestrate.js";
 
 interface FakeSession {
   cwd: string;
+  mcpServers: acp.McpServer[];
   turns: number;
   turn?: AbortController;
 }
@@ -64,7 +68,7 @@ const app = acp
   }))
   .onRequest(acp.methods.agent.session.new, ({ params }) => {
     const sessionId = randomUUID();
-    sessions.set(sessionId, { cwd: params.cwd, turns: 0 });
+    sessions.set(sessionId, { cwd: params.cwd, mcpServers: params.mcpServers ?? [], turns: 0 });
     return { sessionId };
   })
   .onNotification(acp.methods.agent.session.cancel, ({ params }) => {
@@ -104,6 +108,20 @@ const app = acp
           ? `Got it. I'm a scripted demo agent, so I'll walk through the steps a real agent would take for: "${short}"\n\n`
           : `Following up on: "${short}"\n\n`,
       );
+
+      if (lower.includes("orchestrate")) {
+        await orchestrate({
+          mcpServers: session.mcpServers,
+          task: short,
+          readonly: lower.includes("readonly"),
+          signal: turn.signal,
+          update,
+          say,
+          pause,
+        });
+        await say("All done.");
+        return { stopReason: "end_turn" };
+      }
 
       const steps = ["Read the workspace", "Write a summary file", "Report back"];
       const plan = (done: number): acp.SessionUpdate => ({

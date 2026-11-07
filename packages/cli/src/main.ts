@@ -464,11 +464,13 @@ const COMMANDS: Record<string, Command> = {
 
   run: {
     group: "Jobs",
-    usage: "run <agent> <prompt…> [--detach] [--title <t>] [--workspace <mode>] [--after <job>]…",
+    usage:
+      "run <agent> <prompt…> [--orchestrate] [--detach] [--title <t>] [--workspace <mode>] [--after <job>]…",
     summary:
       "Start a job and follow it, answering approvals here. Use - to read the prompt from stdin",
     options: {
       detach: { type: "boolean", short: "d" },
+      orchestrate: { type: "boolean", short: "o" },
       title: { type: "string" },
       workspace: { type: "string" },
       after: { type: "string", multiple: true },
@@ -481,6 +483,7 @@ const COMMANDS: Record<string, Command> = {
       const workspace = oneOf(str(ctx.values, "workspace"), WORKSPACES, "workspace");
       const title = str(ctx.values, "title");
       const detach = ctx.values.detach === true;
+      const orchestrate = ctx.values.orchestrate === true;
       const connection = await ctx.connect(!detach);
       const { client } = connection;
       await checkRoot(ctx, client);
@@ -494,12 +497,14 @@ const COMMANDS: Record<string, Command> = {
           ...(title ? { title } : {}),
           ...(workspace ? { workspace } : {}),
           ...(dependsOn.length ? { dependsOn } : {}),
+          ...(orchestrate ? { role: "orchestrator" as const } : {}),
         });
         if (!detach) {
           const after = dependsOn.length ? ` · waits for ${dependsOn.join(", ")}` : "";
+          const role = orchestrate ? " · orchestrator" : "";
           ctx.print(
             ctx.style.dim(
-              `Job ${job.id} · ${job.agentId} on ${job.harness} · ${job.workspace}${after}`,
+              `Job ${job.id} · ${job.agentId} on ${job.harness} · ${job.workspace}${role}${after}`,
             ),
           );
         }
@@ -548,7 +553,11 @@ const COMMANDS: Record<string, Command> = {
                 (v.pendingApprovals ? s.amber(` (${v.pendingApprovals})`) : ""),
               ago(v.job.createdAt),
               String(v.toolCalls),
-              oneLine(v.job.title, 60),
+              (v.job.parentJobId
+                ? s.dim("↳ ")
+                : v.job.role === "orchestrator"
+                  ? s.cyan("◆ ")
+                  : "") + oneLine(v.job.title, 60),
             ]),
           s,
         ),
