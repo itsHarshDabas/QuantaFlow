@@ -32,11 +32,12 @@ async function initGitRepo(dir: string): Promise<void> {
   git("commit", "-q", "-m", "init");
 }
 
-async function boot(options: { git?: boolean } = {}): Promise<void> {
+async function boot(options: { git?: boolean; maxConcurrent?: number } = {}): Promise<void> {
   if (options.git !== false) await initGitRepo(root);
   daemon = await startDaemon({
     root,
     port: 0,
+    ...(options.maxConcurrent ? { maxConcurrent: options.maxConcurrent } : {}),
     webDist: false,
     harnesses: FAKE,
     logWarnings: false,
@@ -443,6 +444,110 @@ describe("merge and discard", () => {
     expect(existsSync(folder)).toBe(true);
     await client.discard(id);
     expect(existsSync(folder)).toBe(false);
+  });
+});
+
+describe("orchestrator", () => {
+  it("gives an orchestrator tools to start workers, even with one concurrency slot", async () => {
+    await boot({ maxConcurrent: 1 });
+    await client.createAgent(agent());
+    const lead = await client.createJob({
+      agentId: "builder",
+      prompt: "orchestrate a summary, readonly",
+      role: "orchestrator",
+    });
+    expect(lead.runId).toBe(lead.id);
+    const done = await waitForStatus(lead.id, "done");
+    expect(done.lastMessage).toContain("All done.");
+
+    const workers = (await client.jobs()).filter((v) => v.job.parentJobId === lead.id);
+    expect(workers).toHaveLength(2);
+    const [survey, writeUp] = workers.sort((a, b) => a.job.createdAt - b.job.createdAt);
+    for (const w of workers) {
+      expect(w.job).toMatchObject({ role: "worker", runId: lead.id, status: "done" });
+    }
+    expect(writeUp?.job.dependsOn).toEqual([survey?.job.id]);
+
+    const { events } = await client.events(lead.id);
+    const tools = events.flatMap((e) => (e.type === "tool.call" ? [e.title] : []));
+    expect(tools[0]).toBe("List worker agents");
+    expect(tools).toContain("Wait for the workers");
+    const failed = events.filter((e) => e.type === "tool.update" && e.status === "failed");
+    expect(failed).toHaveLength(0);
+  });
+
+  it("keeps waiting while a worker waits for approval", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const lead = await client.createJob({
+      agentId: "builder",
+      prompt: "orchestrate a summary",
+      role: "orchestrator",
+    });
+    const writeUp = await waitFor(
+      async () => (await client.approvals()).find((a) => a.kind === "edit" && a.jobId !== lead.id),
+      "the worker's edit approval",
+    );
+    await new Promise((r) => setTimeout(r, 300));
+    expect((await client.job(lead.id)).job.status).toBe("working");
+    await client.decide(writeUp.id, "allow");
+    const done = await waitForStatus(lead.id, "done");
+    expect(done.lastMessage).toContain("All done.");
+    const { events } = await client.events(lead.id);
+    const text = events.map((e) => (e.type === "message" ? e.text : "")).join("");
+    expect(text).toContain("Both workers finished.");
+  });
+
+  it("doesn't give workers the tools", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const job = await client.createJob({ agentId: "builder", prompt: "orchestrate, readonly" });
+    const done = await waitForStatus(job.id, "done");
+    expect(done.lastMessage).toContain("All done.");
+    const { events } = await client.events(job.id);
+    const text = events.map((e) => (e.type === "message" ? e.text : "")).join("");
+    expect(text).toContain("no QuantaFlow tools were connected");
+  });
+
+  it("checks parents, refuses nested orchestrators and caps the workers", async () => {
+    await boot();
+    await client.createAgent(agent());
+    const worker = await client.createJob({ agentId: "builder", prompt: "slow, readonly" });
+    await expect(
+      client.createJob({ agentId: "builder", prompt: "x", parentJobId: worker.id }),
+    ).rejects.toThrow("is not an orchestrator");
+
+    const lead = await client.createJob({
+      agentId: "builder",
+      prompt: "readonly",
+      role: "orchestrator",
+      runId: "run_custom",
+    });
+    await expect(
+      client.createJob({
+        agentId: "builder",
+        prompt: "x",
+        parentJobId: lead.id,
+        role: "orchestrator",
+      }),
+    ).rejects.toThrow("can't start another orchestrator");
+
+    const child = await client.createJob({
+      agentId: "builder",
+      prompt: "readonly",
+      parentJobId: lead.id,
+      runId: "ignored",
+    });
+    expect(child.runId).toBe("run_custom");
+    for (let i = 1; i < 20; i++) {
+      await client.createJob({ agentId: "builder", prompt: "readonly", parentJobId: lead.id });
+    }
+    const error = await client
+      .createJob({ agentId: "builder", prompt: "x", parentJobId: lead.id })
+      .catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(QfApiError);
+    expect((error as QfApiError).status).toBe(409);
+    expect((error as QfApiError).message).toContain("at most 20 jobs");
   });
 });
 

@@ -74,6 +74,8 @@ export function follow(setup: FollowSetup): Promise<FollowResult> {
     const queue: string[] = [];
     let pumping = false;
     let current: { id: string; abort: AbortController } | null = null;
+    /** Worker jobs an orchestrator started. Their approvals are asked here too. */
+    const children = new Set<string>();
 
     const end = (state: SessionState | null, extra: { code?: number; detached?: boolean } = {}) => {
       if (finished) return;
@@ -104,8 +106,63 @@ export function follow(setup: FollowSetup): Promise<FollowResult> {
       reject(error);
     };
 
+    const handleChild = (event: QfEvent) => {
+      const tag = s.dim(`[${event.jobId}]`);
+      switch (event.type) {
+        case "job.created":
+          renderer.line(
+            `${s.cyan("↳")} ${tag} ${event.job.agentId} · ${oneLine(event.job.title, 80)}${
+              event.job.dependsOn.length ? s.dim(` · after ${event.job.dependsOn.join(", ")}`) : ""
+            }`,
+          );
+          return;
+        case "permission.requested":
+          renderer.event(event);
+          queue.push(event.approvalId);
+          void pump();
+          return;
+        case "permission.resolved": {
+          const ask = renderer.describeAsk(event.approvalId);
+          renderer.unresolved.delete(event.approvalId);
+          if (current?.id === event.approvalId) current.abort.abort();
+          // Policy decisions inside workers are routine; show only what a person decided.
+          if (event.by === "policy" || !ask) return;
+          const by = event.by === "user" ? "you" : event.by;
+          const what = `${ask.kind}: ${oneLine(ask.title, 80)}`;
+          renderer.line(
+            event.outcome === "allowed"
+              ? s.green(`✓ ${tag} allowed by ${by} · ${what}`)
+              : event.outcome === "denied"
+                ? s.red(`✗ ${tag} denied by ${by} · ${what}`)
+                : s.dim(`– ${tag} approval cancelled · ${what}`),
+          );
+          return;
+        }
+        case "job.state":
+          if (event.state === "done" || event.state === "idle") {
+            renderer.line(`${s.green("✓")} ${tag} ${event.state === "done" ? "done" : "idle"}`);
+          } else if (event.state === "failed") {
+            renderer.line(s.red(`✗ ${tag} failed${event.reason ? `: ${event.reason}` : ""}`));
+          } else if (event.state === "cancelled") {
+            renderer.line(s.dim(`– ${tag} cancelled`));
+          }
+          return;
+        default:
+          return;
+      }
+    };
+
     const handle = (event: QfEvent) => {
-      if (finished || event.jobId !== jobId || event.seq <= renderedUpTo) return;
+      if (finished || event.seq <= renderedUpTo) return;
+      if (event.jobId !== jobId) {
+        if (event.type === "job.created" && event.job.parentJobId === jobId && jobId) {
+          children.add(event.jobId);
+        }
+        if (!children.has(event.jobId)) return;
+        renderedUpTo = event.seq;
+        handleChild(event);
+        return;
+      }
       renderedUpTo = event.seq;
       renderer.event(event);
       if (event.type === "permission.requested") {
@@ -123,8 +180,9 @@ export function follow(setup: FollowSetup): Promise<FollowResult> {
       const tool = renderer.toolFor(ask?.toolCallId);
       const preview = previewInput(approval.input, 240, (f) => renderer.rel(f));
       const hasAlways = approval.options.some((o) => o.kind === "allow_always");
+      const from = approval.jobId !== jobId ? ` ${s.dim(`[${approval.jobId}]`)}` : "";
       const lines = [
-        `${s.amber(s.bold(`⏸ Approve ${approval.kind}?`))} ${oneLine(approval.title, 120)}`,
+        `${s.amber(s.bold(`⏸ Approve ${approval.kind}?`))}${from} ${oneLine(approval.title, 120)}`,
       ];
       if (preview) lines.push(s.dim(`  ${preview}`));
       const files = (tool?.locations ?? []).map((f) => renderer.rel(f));
@@ -192,8 +250,9 @@ export function follow(setup: FollowSetup): Promise<FollowResult> {
             await prompt(pending);
           } else {
             const ask = renderer.describeAsk(id);
+            const from = pending.jobId !== jobId ? ` [${pending.jobId}]` : "";
             renderer.line(
-              `${s.amber(`⏸ Waiting for your approval · ${pending.kind}: ${oneLine(ask?.title ?? pending.title, 90)}`)}\n${s.dim(
+              `${s.amber(`⏸ Waiting for your approval${from} · ${pending.kind}: ${oneLine(ask?.title ?? pending.title, 90)}`)}\n${s.dim(
                 `  Decide with \`qf approve ${id}\`, \`qf deny ${id}\` or in the web UI.`,
               )}`,
             );
@@ -276,7 +335,25 @@ export function follow(setup: FollowSetup): Promise<FollowResult> {
             end(view.job.status);
             return;
           }
-          pendingForJob = approvals.filter((a) => a.jobId === id);
+          if (view.job.role === "orchestrator") {
+            for (const child of await client.jobs()) {
+              if (child.job.parentJobId === id) children.add(child.job.id);
+            }
+          }
+          pendingForJob = approvals.filter((a) => a.jobId === id || children.has(a.jobId));
+          for (const approval of pendingForJob) {
+            if (approval.jobId === id) continue;
+            renderer.event({
+              type: "permission.requested",
+              approvalId: approval.id,
+              title: approval.title,
+              kind: approval.kind,
+              options: approval.options,
+              seq: 0,
+              ts: approval.createdAt,
+              jobId: approval.jobId,
+            } as QfEvent);
+          }
         }
         ready = true;
         for (const event of buffer.splice(0)) handle(event);

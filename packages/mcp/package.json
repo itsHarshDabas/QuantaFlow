@@ -1,0 +1,32 @@
+{
+  "name": "@quantaflow/mcp",
+  "version": "0.1.0",
+  "description": "The QuantaFlow MCP server: lets an orchestrator agent start, watch and steer worker jobs.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./bin": "./dist/bin.js"
+  },
+  "bin": {
+    "qf-mcp": "./dist/bin.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.test.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.32.2",
+    "@quantaflow/core": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

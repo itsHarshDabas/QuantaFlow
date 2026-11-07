@@ -53,27 +53,27 @@ qf attach last                             # follow a job and answer its approva
 
 ## The `qf` CLI
 
-| Command                           | What it does                                                                        |
-| --------------------------------- | ----------------------------------------------------------------------------------- |
-| `qf up [--port N]`                | Start the daemon for this project and keep it running                               |
-| `qf status`                       | Daemon, project, job counts and waiting approvals                                   |
-| `qf init`                         | Create `.quantaflow/` with a config template, an assistant and a demo agent         |
-| `qf harnesses`                    | Harnesses QuantaFlow can drive, and whether their CLIs are installed                |
-| `qf agents`                       | List agents                                                                         |
-| `qf agent add <id> --harness <h>` | Add an agent. Also takes `--model`, `--instructions`, `--workspace` and `--preset`  |
-| `qf agent rm <id>`                | Remove an agent added with `qf agent add`                                           |
-| `qf run <agent> <prompt…>`        | Start a job and follow it. Also takes `--detach`, `--after <job>` and `-` for stdin |
-| `qf jobs [--limit n]`             | List jobs, newest first                                                             |
-| `qf show <job>`                   | Print a job's conversation, tool calls and approvals                                |
-| `qf attach <job>`                 | Follow a running job and answer its approvals                                       |
-| `qf say <job> <message…>`         | Send a follow-up and follow the reply                                               |
-| `qf diff <job>`                   | The job's changes against the commit it started from, including new files           |
-| `qf merge <job> [--squash]`       | Commit the job's work and merge its branch into the branch you have checked out     |
-| `qf discard <job>`                | Delete a stopped job's worktree and branch, or its folder                           |
-| `qf cancel <job>`                 | Stop a job                                                                          |
-| `qf approvals`                    | Everything waiting for you, from every job                                          |
-| `qf approve <id> [--always]`      | Allow a waiting tool call                                                           |
-| `qf deny <id>`                    | Deny a waiting tool call                                                            |
+| Command                           | What it does                                                                       |
+| --------------------------------- | ---------------------------------------------------------------------------------- |
+| `qf up [--port N]`                | Start the daemon for this project and keep it running                              |
+| `qf status`                       | Daemon, project, job counts and waiting approvals                                  |
+| `qf init`                         | Create `.quantaflow/` with a config template and assistant, lead and demo agents   |
+| `qf harnesses`                    | Harnesses QuantaFlow can drive, and whether their CLIs are installed               |
+| `qf agents`                       | List agents                                                                        |
+| `qf agent add <id> --harness <h>` | Add an agent. Also takes `--model`, `--instructions`, `--workspace` and `--preset` |
+| `qf agent rm <id>`                | Remove an agent added with `qf agent add`                                          |
+| `qf run <agent> <prompt…>`        | Start a job and follow it. Takes `--orchestrate`, `--detach`, `--after <job>`, `-` |
+| `qf jobs [--limit n]`             | List jobs, newest first                                                            |
+| `qf show <job>`                   | Print a job's conversation, tool calls and approvals                               |
+| `qf attach <job>`                 | Follow a running job and answer its approvals                                      |
+| `qf say <job> <message…>`         | Send a follow-up and follow the reply                                              |
+| `qf diff <job>`                   | The job's changes against the commit it started from, including new files          |
+| `qf merge <job> [--squash]`       | Commit the job's work and merge its branch into the branch you have checked out    |
+| `qf discard <job>`                | Delete a stopped job's worktree and branch, or its folder                          |
+| `qf cancel <job>`                 | Stop a job                                                                         |
+| `qf approvals`                    | Everything waiting for you, from every job                                         |
+| `qf approve <id> [--always]`      | Allow a waiting tool call                                                          |
+| `qf deny <id>`                    | Deny a waiting tool call                                                           |
 
 A job can be named by its full id, a unique prefix, or `last`. Every command takes `--url` (or `QF_URL`), `--root`, `--json`, `--verbose` (thoughts, harness stderr and tool output) and `--no-color`. The first Ctrl+C during `run`, `attach` or `say` cancels the job; the second stops following it.
 
@@ -102,6 +102,30 @@ limits:
 **Policies.** `readonly` allows reads and searches and denies everything else. `safe` lets reads run and asks before edits, commands, deletes and web fetches. `trusted` runs everything except deletes, which ask. A short list of destructive commands (such as `rm -rf /` and force-pushes) is always denied, whatever the rules say.
 
 **Workspaces.** `worktree` jobs get `git worktree add` on a new `qf/<job id>` branch under `.quantaflow/state/worktrees/`. Projects that aren't git repositories fall back to `folder`. `cwd` jobs work directly in your checkout, so use it only for agents you trust with it. Each job also gets its own block of 10 ports in `PORT` and `QF_PORT_BASE`, so parallel dev servers don't collide.
+
+## Orchestrators
+
+An orchestrator is a job that hands parts of a task to other agents. Start one with `--orchestrate` (or `role: "orchestrator"` in the API):
+
+```sh
+qf run lead --orchestrate "add input validation to every API route, one worker per route file"
+qf run demo --orchestrate "orchestrate a summary"   # the scripted version, no model needed
+```
+
+QuantaFlow connects the orchestrator to its own MCP server, `quantaflow`, with six tools:
+
+| Tool            | What it does                                                                      |
+| --------------- | --------------------------------------------------------------------------------- |
+| `list_agents`   | The agents it can give work to                                                    |
+| `create_job`    | Start a worker job, optionally after other workers (`dependsOn`)                  |
+| `wait_for_jobs` | Wait until workers finish, or until one needs your approval, with a timeout       |
+| `get_job`       | A worker's status, its latest reply, the files it changed and, if asked, its diff |
+| `send_message`  | A follow-up to a worker, such as a fix request                                    |
+| `cancel_job`    | Stop a worker                                                                     |
+
+Workers are ordinary jobs, each in its own workspace and under its own agent's policy, so their approvals still come to you. `qf run --orchestrate` and `qf attach` show the workers' progress and ask their approvals in the same terminal. The tools only reach the workers that orchestrator started. One orchestrator can start up to 20 workers, workers can't be orchestrators, and orchestrators don't count against `maxConcurrent`, because they spend most of their time waiting.
+
+The `lead` agent from `qf init` runs on Claude Code and has a policy rule that allows the `quantaflow` tools without asking. Any harness that supports MCP servers over stdio can be an orchestrator.
 
 ## Configuration
 
@@ -158,6 +182,7 @@ Everything an agent does becomes an event in an append-only log. Every view is a
 | [`packages/drivers`](packages/drivers)       | Starts any ACP harness, maps its updates to QuantaFlow events and relays permission requests    |
 | [`apps/daemon`](apps/daemon)                 | `quantaflowd`: the event store, job supervisor, policies, approvals, workspaces and the API     |
 | [`packages/cli`](packages/cli)               | `qf`: run, follow and approve jobs from the terminal                                            |
+| [`packages/mcp`](packages/mcp)               | `qf-mcp`: the MCP server that gives orchestrator jobs their tools                               |
 
 ## Roadmap
 
@@ -165,7 +190,7 @@ Everything an agent does becomes an event in an append-only log. Every view is a
 2. **M1: One agent end to end.** ACP driver, daemon, SQLite event store, approvals in the `qf` CLI. (Done.)
 3. **M2: Table view and approvals.** Web UI with a live table, an agent drawer and the approvals inbox. (Done, with early Flow and Orbit views.)
 4. **M3: Many harnesses, isolated.** All five harnesses verified, a terminal fallback for anything without ACP, diff review and merge.
-5. **M4: Orchestrator.** An orchestrator agent (Claude Code by default, configurable) that plans jobs and steers other agents through MCP tools, plus the live Flow view.
+5. **M4: Orchestrator.** An orchestrator agent (Claude Code by default, configurable) that plans jobs and steers other agents through MCP tools, plus the live Flow view. (Backend done.)
 6. **M5: Workflows and Orbit.** Reusable workflow YAML with fan-out and human gates, and the Orbit view.
 
 ## Development

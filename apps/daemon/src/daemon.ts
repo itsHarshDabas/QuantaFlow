@@ -16,7 +16,7 @@ import {
 import { EventLog } from "./events.js";
 import { buildServer } from "./server.js";
 import { Store } from "./store.js";
-import { Supervisor } from "./supervisor.js";
+import { ORCHESTRATOR_MCP_NAME, Supervisor } from "./supervisor.js";
 import { WorkspaceManager } from "./workspace.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -31,6 +31,16 @@ export const VERSION: string = (() => {
     return "0.0.0";
   }
 })();
+
+/** The built `qf-mcp` script that serves orchestrator tools, or null if it isn't built. */
+function orchestratorMcpPath(): string | null {
+  try {
+    const file = fileURLToPath(import.meta.resolve("@quantaflow/mcp/bin"));
+    return existsSync(file) ? file : null;
+  } catch {
+    return null;
+  }
+}
 
 /** Finds the built web UI: an explicit path, QF_WEB_DIST, or apps/web/dist in this repo. */
 function findWebDist(explicit: string | false | undefined): string | null {
@@ -91,6 +101,20 @@ export async function startDaemon(options: DaemonOptions = {}): Promise<RunningD
     maxConcurrent: config.maxConcurrent,
     idleMinutes: config.idleMinutes,
     version: VERSION,
+    orchestratorMcp: (job) => {
+      const bin = orchestratorMcpPath();
+      if (!bin) return null;
+      return {
+        name: ORCHESTRATOR_MCP_NAME,
+        command: process.execPath,
+        args: [bin],
+        env: {
+          QF_URL: `http://127.0.0.1:${boundPort}`,
+          QF_PARENT_JOB_ID: job.id,
+          QF_RUN_ID: job.runId ?? job.id,
+        },
+      };
+    },
   });
 
   log.hydrate(store.listJobs(10_000));

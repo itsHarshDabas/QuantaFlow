@@ -28,6 +28,7 @@
     "@fastify/websocket": "11.3.7",
     "@quantaflow/core": "workspace:*",
     "@quantaflow/drivers": "workspace:*",
+    "@quantaflow/mcp": "workspace:*",
     "fastify": "5.12.8",
     "yaml": "2.9.1",
     "zod": "4.6.7"

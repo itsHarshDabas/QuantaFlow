@@ -219,6 +219,25 @@ describe("qf against a running daemon", () => {
     expect(show.out()).toContain("– Workspace discarded");
   });
 
+  it("follows an orchestrator's workers and asks their approvals here", async () => {
+    await qf(["agent", "add", "builder", "--harness", "fake"]);
+    const run = terminal({ interactive: true, answers: ["y"] });
+    expect(await qf(["run", "builder", "--orchestrate", "orchestrate a summary"], run)).toBe(0);
+    const out = run.out();
+    expect(out).toContain("· orchestrator");
+    expect(out).toMatch(/↳ \[job_\w+\] builder · Survey the workspace/);
+    expect(out).toMatch(/⏸ Approve edit\? \[job_\w+\] Write QUANTAFLOW_DEMO.md/);
+    expect(out).toMatch(/✓ \[job_\w+\] allowed by you · edit/);
+    expect(out).toContain("Both workers finished.");
+    expect(out).toContain("Changed QUANTAFLOW_DEMO.md");
+    expect(run.asked).toHaveLength(1);
+
+    const jobs = terminal();
+    await qf(["jobs"], jobs);
+    expect(jobs.out()).toContain("◆ orchestrate a summary");
+    expect(jobs.out()).toContain("↳ Write up the findings");
+  });
+
   it("explains mistakes instead of failing obscurely", async () => {
     const unknown = terminal();
     expect(await qf(["frobnicate"], unknown)).toBe(2);
@@ -257,6 +276,7 @@ describe("qf without a daemon", () => {
     expect(await main(["init"], init.io)).toBe(0);
     expect(init.out()).toContain("created .quantaflow/agents/demo.yaml");
     expect(existsSync(path.join(root, ".quantaflow", "agents", "assistant.yaml"))).toBe(true);
+    expect(existsSync(path.join(root, ".quantaflow", "agents", "lead.yaml"))).toBe(true);
 
     const url = `http://127.0.0.1:${await freePort()}`;
     const run = terminal({ interactive: true });
