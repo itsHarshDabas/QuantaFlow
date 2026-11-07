@@ -168,6 +168,13 @@ export async function buildServer(deps: ServerDeps): Promise<FastifyInstance> {
     await deps.supervisor.cancel(request.params.id);
     return { ok: true };
   });
+  app.post<{ Params: { id: string } }>("/api/jobs/:id/merge", async (request) =>
+    deps.supervisor.merge(request.params.id, request.body),
+  );
+  app.post<{ Params: { id: string } }>("/api/jobs/:id/discard", async (request) => {
+    await deps.supervisor.discard(request.params.id);
+    return { ok: true };
+  });
   app.get<{ Params: { id: string } }>("/api/jobs/:id/diff", async (request) => {
     const job = deps.store.getJob(request.params.id);
     if (!job) throw notFound(`Job "${request.params.id}"`);

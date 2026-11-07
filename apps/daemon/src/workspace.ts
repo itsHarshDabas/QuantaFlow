@@ -1,18 +1,53 @@
 import { execFile } from "node:child_process";
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
+import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
-import type { DiffResult, Job, WorkspaceMode } from "@quantaflow/core";
+import type { DiffResult, Job, MergeResult, MergeStrategy, WorkspaceMode } from "@quantaflow/core";
+import { badRequest, conflict } from "./errors.js";
 
 const exec = promisify(execFile);
 const MAX_DIFF_BYTES = 2 * 1024 * 1024;
 const PORTS_PER_JOB = 10;
 const PORT_SLOTS = 500;
 
-async function git(cwd: string, args: string[]): Promise<string> {
-  const { stdout } = await exec("git", args, { cwd, maxBuffer: 32 * 1024 * 1024 });
+async function git(cwd: string, args: string[], env?: NodeJS.ProcessEnv): Promise<string> {
+  const { stdout } = await exec("git", args, {
+    cwd,
+    maxBuffer: 32 * 1024 * 1024,
+    ...(env ? { env: { ...process.env, ...env } } : {}),
+  });
   return stdout;
+}
+
+/** Runs git and reports failure instead of throwing. */
+function tryGit(cwd: string, args: string[]): Promise<{ ok: boolean; out: string }> {
+  return tryGitWith(cwd, args, undefined);
+}
+
+async function tryGitWith(
+  cwd: string,
+  args: string[],
+  env: NodeJS.ProcessEnv | undefined,
+): Promise<{ ok: boolean; out: string }> {
+  try {
+    return { ok: true, out: await git(cwd, args, env) };
+  } catch (error) {
+    const e = error as { stdout?: string; stderr?: string; message?: string };
+    return { ok: false, out: `${e.stdout ?? ""}${e.stderr ?? e.message ?? ""}` };
+  }
+}
+
+/** Fallback identity, so committing an agent's work never fails on a machine without one. */
+async function commitIdentity(cwd: string): Promise<NodeJS.ProcessEnv | undefined> {
+  const email = await tryGit(cwd, ["config", "user.email"]);
+  if (email.ok && email.out.trim()) return undefined;
+  return {
+    GIT_AUTHOR_NAME: "QuantaFlow",
+    GIT_AUTHOR_EMAIL: "quantaflow@localhost",
+    GIT_COMMITTER_NAME: "QuantaFlow",
+    GIT_COMMITTER_EMAIL: "quantaflow@localhost",
+  };
 }
 
 export interface PreparedWorkspace {
@@ -29,6 +64,8 @@ export interface PreparedWorkspace {
 export class WorkspaceManager {
   private readonly portsInUse = new Set<number>();
   private nextSlot = 0;
+  /** Merges touch the project root's index, so they run one at a time. */
+  private mergeLock: Promise<unknown> = Promise.resolve();
 
   constructor(
     private readonly root: string,
@@ -101,6 +138,125 @@ export class WorkspaceManager {
     } catch (error) {
       this.releasePorts(portBase);
       throw error;
+    }
+  }
+
+  /**
+   * Merges a worktree job into the branch checked out in the project root. The agent's
+   * uncommitted work is committed on the job branch first. A conflicting merge is aborted, so
+   * the root is never left half-merged.
+   */
+  merge(job: Job, strategy: MergeStrategy, message?: string): Promise<MergeResult> {
+    const run = this.mergeLock.then(() => this.mergeNow(job, strategy, message));
+    this.mergeLock = run.catch(() => undefined);
+    return run;
+  }
+
+  private async mergeNow(
+    job: Job,
+    strategy: MergeStrategy,
+    message?: string,
+  ): Promise<MergeResult> {
+    if (job.workspace !== "worktree" || !job.branch || !job.workspacePath) {
+      throw badRequest("Only worktree jobs can be merged.");
+    }
+    if (!existsSync(job.workspacePath)) throw conflict("The job's worktree no longer exists.");
+
+    const head = await tryGit(this.root, ["symbolic-ref", "--short", "-q", "HEAD"]);
+    const into = head.out.trim();
+    if (!head.ok || !into) {
+      throw conflict(
+        "The project is on a detached HEAD. Check out the branch to merge into first.",
+      );
+    }
+    if (into === job.branch) throw conflict(`The project root has ${into} checked out.`);
+    // No trim: porcelain lines start with a status column that may be a space.
+    const dirty = (await git(this.root, ["status", "--porcelain", "--untracked-files=no"]))
+      .split("\n")
+      .filter(Boolean);
+    if (dirty.length > 0) {
+      throw conflict("The project has uncommitted changes. Commit or stash them, then merge.", {
+        reason: "dirty",
+        files: dirty.map((line) => line.slice(3)),
+      });
+    }
+
+    // Commit what the agent left in its worktree. `diff` may have marked new files intent-to-add.
+    const title = job.title.replace(/\s+/g, " ").trim().slice(0, 72) || job.id;
+    const identity = await commitIdentity(job.workspacePath);
+    await git(job.workspacePath, ["add", "--all"]);
+    const staged = await tryGit(job.workspacePath, ["diff", "--cached", "--quiet"]);
+    if (!staged.ok) {
+      await git(
+        job.workspacePath,
+        ["commit", "--no-verify", "-q", "-m", `${title}\n\nWork from QuantaFlow job ${job.id}.`],
+        identity,
+      );
+    }
+
+    const ahead = Number(
+      (await git(this.root, ["rev-list", "--count", `${into}..${job.branch}`])).trim(),
+    );
+    if (!ahead)
+      throw conflict(`There is nothing to merge: ${job.branch} has no changes beyond ${into}.`, {
+        reason: "empty",
+      });
+
+    const text =
+      message ??
+      (strategy === "squash" ? `${title} (QuantaFlow ${job.id})` : `Merge ${job.branch}: ${title}`);
+    const rootIdentity = await commitIdentity(this.root);
+    const merged =
+      strategy === "squash"
+        ? await tryGit(this.root, ["merge", "--squash", job.branch])
+        : await tryGitWith(
+            this.root,
+            ["merge", "--no-ff", "--no-edit", "-m", text, job.branch],
+            rootIdentity,
+          );
+    if (!merged.ok) {
+      const conflicts = (await tryGit(this.root, ["diff", "--name-only", "--diff-filter=U"])).out
+        .split("\n")
+        .filter(Boolean);
+      await tryGit(this.root, strategy === "squash" ? ["reset", "--merge"] : ["merge", "--abort"]);
+      throw conflict(
+        conflicts.length
+          ? `Merging ${job.branch} into ${into} conflicts in ${conflicts.length} file(s). Nothing was changed.`
+          : `git could not merge ${job.branch} into ${into}: ${merged.out.trim().split("\n").at(-1) ?? ""}`,
+        { reason: "conflict", conflicts },
+      );
+    }
+    if (strategy === "squash") {
+      await git(this.root, ["commit", "--no-verify", "-q", "-m", text], rootIdentity);
+    }
+    const commit = (await git(this.root, ["rev-parse", "HEAD"])).trim();
+    return { commit, into, strategy };
+  }
+
+  /** Removes a job's worktree and branch, or its folder. Never touches the project root. */
+  async discard(job: Job): Promise<void> {
+    if (job.workspace === "cwd")
+      throw badRequest("cwd jobs work in the project itself; there is nothing to discard.");
+    if (job.workspace === "worktree" && job.branch) {
+      if (job.workspacePath && existsSync(job.workspacePath)) {
+        const removed = await tryGit(this.root, [
+          "worktree",
+          "remove",
+          "--force",
+          job.workspacePath,
+        ]);
+        if (!removed.ok) await rm(job.workspacePath, { recursive: true, force: true });
+      }
+      await tryGit(this.root, ["worktree", "prune"]);
+      await tryGit(this.root, ["branch", "-D", job.branch]);
+      return;
+    }
+    if (job.workspacePath) {
+      const inside = path.relative(path.join(this.stateDir, "workspaces"), job.workspacePath);
+      if (inside.startsWith("..") || path.isAbsolute(inside) || inside === "") {
+        throw badRequest("Refusing to delete a folder outside QuantaFlow's workspaces.");
+      }
+      await rm(job.workspacePath, { recursive: true, force: true });
     }
   }
 

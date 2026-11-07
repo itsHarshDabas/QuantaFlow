@@ -22,6 +22,7 @@ const job: Job = {
   parentJobId: null,
   dependsOn: [],
   role: "worker",
+  workspaceState: "active",
 };
 
 function events(...data: QfEventData[]): QfEvent[] {

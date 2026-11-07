@@ -6,6 +6,8 @@ import {
   type DiffResult,
   foldJob,
   type Job,
+  type MergeInput,
+  type MergeResult,
   type PendingApproval,
   QfApiError,
   type QfEvent,
@@ -17,6 +19,8 @@ import {
   TERMINAL_STATES,
 } from "@quantaflow/core";
 import type { Backend } from "../lib/backend";
+import { parseUnifiedDiff } from "../lib/diff";
+import type { WorkspaceState } from "../lib/review";
 import {
   DEMO_AGENTS,
   DEMO_HARNESSES,
@@ -43,6 +47,7 @@ interface Sim {
   /** The worktree diff so far, and what it becomes once the agent's edits are allowed. */
   diff: string | null;
   finalDiff: string | null;
+  workspaceState: WorkspaceState;
   startAfter: number;
   /** Extra ticks to wait before the next step, so turns don't feel mechanical. */
   rest: number;
@@ -57,6 +62,8 @@ const demoId = (prefix: string) => `${prefix}_demo${(++counter).toString(36).pad
  */
 export class DemoBackend implements Backend {
   private seq = 0;
+  /** Files already merged into the demo project, so a second job touching them conflicts. */
+  private mergedPaths = new Set<string>();
   private clock: number | null = null;
   private readonly listeners = new Set<StreamHandlers>();
   private agentList: AgentProfile[] = structuredClone(DEMO_AGENTS);
@@ -175,6 +182,64 @@ export class DemoBackend implements Backend {
     }
     sim.waiting = null;
     this.setState(sim, "cancelled", "Cancelled by you");
+    return { ok: true };
+  }
+
+  async merge(jobId: string, input: MergeInput = {}): Promise<MergeResult> {
+    const strategy = input.strategy ?? "merge";
+    const sim = this.require(jobId);
+    if (sim.job.workspace !== "worktree") {
+      throw new QfApiError(400, "Only jobs with their own git worktree can be merged.");
+    }
+    // Same 409 shape as the daemon: { error, details: { reason, conflicts? } }.
+    const refuse = (error: string, details: Record<string, unknown>) => {
+      throw new QfApiError(409, error, { error, details });
+    };
+    if (sim.workspaceState !== "active") {
+      refuse(`The job's workspace was already ${sim.workspaceState}.`, { reason: "discarded" });
+    }
+    if (!STOPPABLE.has(sim.status)) {
+      refuse("The job is still running. Wait for it to stop, or cancel it.", { reason: "running" });
+    }
+    const paths = parseUnifiedDiff(sim.diff ?? "").map((file) => file.path);
+    if (paths.length === 0) {
+      refuse(`There is nothing to merge: ${sim.job.branch} has no changes beyond main.`, {
+        reason: "empty",
+      });
+    }
+    const conflicts = paths.filter((path) => this.mergedPaths.has(path));
+    if (conflicts.length > 0) {
+      refuse("The merge conflicts with main, so it was aborted.", {
+        reason: "conflict",
+        conflicts,
+      });
+    }
+    for (const path of paths) this.mergedPaths.add(path);
+    const commit = Array.from({ length: 40 }, () =>
+      Math.floor(Math.random() * 16).toString(16),
+    ).join("");
+    sim.workspaceState = "merged";
+    this.emit(sim, { type: "workspace.merged", commit, into: "main", strategy });
+    return { commit, into: "main", strategy };
+  }
+
+  async discard(jobId: string): Promise<{ ok: true }> {
+    const sim = this.require(jobId);
+    if (sim.job.workspace === "cwd") {
+      throw new QfApiError(
+        400,
+        "This job works in the project root, so there is nothing to discard.",
+      );
+    }
+    if (!STOPPABLE.has(sim.status)) {
+      throw new QfApiError(409, "The job is still running. Cancel it first.", {
+        error: "The job is still running. Cancel it first.",
+        details: { reason: "running" },
+      });
+    }
+    sim.workspaceState = "discarded";
+    sim.diff = null;
+    this.emit(sim, { type: "workspace.discarded" });
     return { ok: true };
   }
 
@@ -325,6 +390,7 @@ export class DemoBackend implements Backend {
       parentJobId: spec.parentJobId ?? null,
       dependsOn: spec.dependsOn ?? [],
       role: spec.role ?? "worker",
+      workspaceState: "active",
     };
     const sim: Sim = {
       job,
@@ -338,6 +404,7 @@ export class DemoBackend implements Backend {
       waiting: null,
       diff: null,
       finalDiff: spec.diff ?? null,
+      workspaceState: "active",
       startAfter: 0,
       rest: 0,
     };
@@ -788,6 +855,8 @@ export class DemoBackend implements Backend {
     this.clock = null;
   }
 }
+
+const STOPPABLE = new Set<SessionState>(["done", "idle", "failed", "cancelled"]);
 
 function firstLine(text: string): string {
   const line = text.trim().split("\n")[0] ?? "";

@@ -50,6 +50,10 @@ export function summarize(event: QfEvent): string {
       return event.text;
     case "turn.ended":
       return event.stopReason;
+    case "workspace.merged":
+      return `merged into ${event.into} (${event.commit.slice(0, 10)})`;
+    case "workspace.discarded":
+      return "workspace discarded";
   }
 }
 

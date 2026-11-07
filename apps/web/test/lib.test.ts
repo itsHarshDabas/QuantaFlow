@@ -1,6 +1,12 @@
 import type { Job, JobView } from "@quantaflow/core";
 import { describe, expect, it } from "vitest";
-import { diffLines, foldContext, parseUnifiedDiff } from "../src/lib/diff";
+import {
+  diffLines,
+  foldContext,
+  inlineChanges,
+  pairInlineChanges,
+  parseUnifiedDiff,
+} from "../src/lib/diff";
 import { formatDuration, relativePath, shortPath } from "../src/lib/format";
 import { clip, previewInput } from "../src/lib/preview";
 import { parseRoute } from "../src/lib/route";
@@ -71,6 +77,29 @@ describe("diffLines and foldContext", () => {
     const kinds = folded.map((l) => l.type);
     expect(kinds.filter((k) => k === "fold")).toHaveLength(2);
     expect(folded.filter((l) => l.type === "context")).toHaveLength(4);
+  });
+});
+
+describe("inline changes", () => {
+  it("marks only the words that changed", () => {
+    const result = inlineChanges("const max = 5;", "const max = 10;");
+    expect(result?.before).toEqual([
+      { text: "const max = ", changed: false },
+      { text: "5", changed: true },
+      { text: ";", changed: false },
+    ]);
+    expect(result?.after.find((s) => s.changed)?.text).toBe("10");
+  });
+
+  it("skips lines that were rewritten outright", () => {
+    expect(inlineChanges("return a;", "throw new Error(message)")).toBeNull();
+  });
+
+  it("pairs removed lines with the added lines after them", () => {
+    const lines = parseUnifiedDiff(DIFF)[0]?.hunks[0]?.lines ?? [];
+    const pairs = pairInlineChanges(lines);
+    expect([...pairs.keys()]).toEqual([1, 2]);
+    expect(pairs.get(2)?.find((s) => s.changed)?.text).toBe("!");
   });
 });
 
@@ -169,6 +198,7 @@ const view = (
     parentJobId: null,
     dependsOn: [],
     role: "worker",
+    workspaceState: "active",
   },
   lastMessage: "",
   toolCalls: 0,

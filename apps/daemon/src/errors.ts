@@ -10,6 +10,7 @@ export class HttpError extends Error {
 }
 
 export const notFound = (what: string) => new HttpError(404, `${what} not found`);
-export const conflict = (message: string) => new HttpError(409, message);
+export const conflict = (message: string, details?: unknown) =>
+  new HttpError(409, message, details);
 export const badRequest = (message: string, details?: unknown) =>
   new HttpError(400, message, details);

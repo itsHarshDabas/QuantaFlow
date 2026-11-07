@@ -17,6 +17,8 @@ export type Backend = Pick<
   | "diff"
   | "decide"
   | "subscribe"
+  | "merge"
+  | "discard"
 >;
 
 let current: Backend | undefined;

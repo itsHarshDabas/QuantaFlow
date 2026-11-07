@@ -29,6 +29,7 @@ const job = (id: string, extra: Partial<Job> = {}): Job => ({
   parentJobId: null,
   dependsOn: [],
   role: "worker",
+  workspaceState: "active",
   ...extra,
 });
 
@@ -192,6 +193,45 @@ describe("applyEvents", () => {
     data = applyEvents(data, [second]);
     expect(data.logs.j1?.events.map((e) => e.seq)).toEqual([first.seq, second.seq]);
     expect(data.logs.j1?.status).toBe("ready");
+  });
+});
+
+describe("workspace events", () => {
+  it("marks a job merged and keeps where it went", () => {
+    seq = 0;
+    const data = applyEvents(emptyLiveData, [
+      ev("j1", { type: "job.created", job: job("j1", { workspace: "worktree", status: "done" }) }),
+      ev(
+        "j1",
+        {
+          type: "workspace.merged",
+          commit: "abc1234",
+          into: "main",
+          strategy: "squash",
+        } as unknown as QfEventData,
+        300,
+      ),
+    ]);
+    expect((data.jobs.j1?.job as { workspaceState?: string } | undefined)?.workspaceState).toBe(
+      "merged",
+    );
+    expect(data.merges.j1).toEqual({
+      commit: "abc1234",
+      into: "main",
+      strategy: "squash",
+      ts: 300,
+    });
+  });
+
+  it("marks a job discarded", () => {
+    seq = 0;
+    const data = applyEvents(emptyLiveData, [
+      ev("j1", { type: "job.created", job: job("j1", { workspace: "folder" }) }),
+      ev("j1", { type: "workspace.discarded" } as unknown as QfEventData),
+    ]);
+    expect((data.jobs.j1?.job as { workspaceState?: string } | undefined)?.workspaceState).toBe(
+      "discarded",
+    );
   });
 });
 
