@@ -349,3 +349,33 @@ describe("restart", () => {
     expect(state.lastSeq).toBeGreaterThan(0);
   });
 });
+
+describe("web UI", () => {
+  it("serves assets added after start, falls back to the app for routes, and 404s missing assets", async () => {
+    const web = path.join(root, "web-dist");
+    await mkdir(path.join(web, "assets"), { recursive: true });
+    await writeFile(path.join(web, "index.html"), "<!doctype html><title>QF</title>");
+    daemon = await startDaemon({
+      root,
+      port: 0,
+      webDist: web,
+      harnesses: FAKE,
+      logWarnings: false,
+    });
+
+    // A rebuild writes new hashed assets while the daemon runs.
+    await writeFile(path.join(web, "assets", "app-new.js"), "console.log(1)");
+    const asset = await fetch(`${daemon.url}/assets/app-new.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("content-type")).toMatch(/javascript/);
+
+    const route = await fetch(`${daemon.url}/jobs/job_123`);
+    expect(route.status).toBe(200);
+    expect(route.headers.get("content-type")).toMatch(/text\/html/);
+    expect(route.headers.get("content-security-policy")).toContain("default-src 'self'");
+
+    expect((await fetch(`${daemon.url}/assets/app-old.js`)).status).toBe(404);
+    expect((await fetch(`${daemon.url}/favicon.ico`)).status).toBe(404);
+    expect((await fetch(`${daemon.url}/api/nope`)).status).toBe(404);
+  });
+});
